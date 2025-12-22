@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:session_builder_mobile/data/session_storage.dart';
-import 'package:session_builder_mobile/ui/screens/step_builder_screen.dart';
+import 'package:session_builder_mobile/logic/state/playback_provider.dart';
+import 'package:session_builder_mobile/logic/state/session_editor_provider.dart';
+import 'package:session_builder_mobile/logic/state/sessions_repository_provider.dart';
 import 'package:session_builder_mobile/ui/screens/session_screen.dart';
+import 'package:session_builder_mobile/ui/screens/step_builder_screen.dart';
 
-class StepListScreen extends StatefulWidget {
+class StepListScreen extends ConsumerStatefulWidget {
   final List<Map<String, dynamic>>? initialSteps;
   final String? sessionId;
   final String? sessionName;
@@ -17,69 +21,49 @@ class StepListScreen extends StatefulWidget {
   });
 
   @override
-  State<StepListScreen> createState() => _StepListScreenState();
+  ConsumerState<StepListScreen> createState() => _StepListScreenState();
 }
 
-class _StepListScreenState extends State<StepListScreen> {
-  late List<Map<String, dynamic>> _steps;
-  late String? _sessionId;
-  late String _sessionName;
-  final SessionStorage _storage = SessionStorage();
-
+class _StepListScreenState extends ConsumerState<StepListScreen> {
   @override
   void initState() {
     super.initState();
-    _steps = widget.initialSteps != null ? List.from(widget.initialSteps!) : [];
-    _sessionId = widget.sessionId;
-    _sessionName = widget.sessionName ?? 'Untitled Session';
-  }
-
-  int _crossfadeSeconds = 3;
-  int? _selectedStepIndex;
-
-  String _calculateTotalDuration() {
-    double totalSeconds = 0;
-    for (final step in _steps) {
-      final durationStr = step['duration'].toString().replaceAll('s', '');
-      totalSeconds += double.tryParse(durationStr) ?? 0;
+    final editor = ref.read(sessionEditorProvider.notifier);
+    if (widget.initialSteps != null ||
+        widget.sessionId != null ||
+        widget.sessionName != null) {
+      editor.state = SessionEditorState(
+        steps: widget.initialSteps != null
+            ? List<Map<String, dynamic>>.from(widget.initialSteps!)
+            : const [],
+        sessionId: widget.sessionId,
+        sessionName: widget.sessionName ?? 'Untitled Session',
+      );
+    } else {
+      editor.reset();
     }
-    final hours = (totalSeconds / 3600).floor();
-    final minutes = ((totalSeconds % 3600) / 60).floor();
-    final seconds = (totalSeconds % 60).floor();
-    return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  void _addStep() async {
-    final result = await Navigator.of(
+  Future<void> _addStep() async {
+    await Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => const StepBuilderScreen()));
-
-    if (result != null && result is Map<String, dynamic>) {
-      setState(() {
-        _steps.add(result);
-      });
-    }
   }
 
   void _removeStep() {
-    if (_selectedStepIndex != null) {
-      setState(() {
-        _steps.removeAt(_selectedStepIndex!);
-        _selectedStepIndex = null;
-      });
-    }
+    ref.read(sessionEditorProvider.notifier).removeSelectedStep();
   }
 
   Future<void> _saveSession() async {
-    if (_steps.isEmpty) {
+    final editorState = ref.read(sessionEditorProvider);
+    if (!editorState.hasSteps) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Add at least one step before saving.")),
       );
       return;
     }
 
-    // Show dialog to get/confirm session name
-    final nameController = TextEditingController(text: _sessionName);
+    final nameController = TextEditingController(text: editorState.sessionName);
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -118,19 +102,17 @@ class _StepListScreenState extends State<StepListScreen> {
 
     if (result != null && result.isNotEmpty) {
       try {
-        final session = await _storage.saveSession(
-          name: result,
-          steps: _steps,
-          crossfadeSeconds: _crossfadeSeconds,
-          existingId: _sessionId,
-        );
-        setState(() {
-          _sessionId = session.id;
-          _sessionName = session.name;
-        });
+        final saved =
+            await ref.read(sessionsRepositoryProvider.notifier).saveFromEditor(
+                  editorState: editorState,
+                  name: result,
+                );
+        ref
+            .read(sessionEditorProvider.notifier)
+            .setSessionMetadata(name: saved.name, id: saved.id);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Session '${session.name}' saved!")),
+            SnackBar(content: Text("Session '${saved.name}' saved!")),
           );
         }
       } catch (e) {
@@ -143,20 +125,25 @@ class _StepListScreenState extends State<StepListScreen> {
     }
   }
 
-  void _startSession() {
-    if (_steps.isEmpty) {
+  Future<void> _startSession() async {
+    final editorState = ref.read(sessionEditorProvider);
+    if (!editorState.hasSteps) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Please add at least one step to start.")),
       );
       return;
     }
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => SessionScreen(steps: _steps)));
+    await ref.read(playbackProvider.notifier).start(editorState.steps);
+    if (mounted) {
+      Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const SessionScreen()));
+    }
   }
 
   Future<void> _exportSession() async {
-    if (_steps.isEmpty) {
+    final editorState = ref.read(sessionEditorProvider);
+    if (!editorState.hasSteps) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Add at least one step before exporting.")),
       );
@@ -164,21 +151,21 @@ class _StepListScreenState extends State<StepListScreen> {
     }
 
     try {
-      // Create a temporary session model for export
       final session = SessionModel(
-        id: _sessionId ?? DateTime.now().millisecondsSinceEpoch.toString(),
-        name: _sessionName,
-        steps: _steps,
-        crossfadeSeconds: _crossfadeSeconds,
+        id: editorState.sessionId ??
+            DateTime.now().millisecondsSinceEpoch.toString(),
+        name: editorState.sessionName,
+        steps: editorState.steps,
+        crossfadeSeconds: editorState.crossfadeSeconds,
       );
 
-      // Export to file
-      final file = await _storage.exportSessionToFile(session);
+      final file = await ref
+          .read(sessionsRepositoryProvider.notifier)
+          .exportSession(session);
 
-      // Share the file
       await Share.shareXFiles(
         [XFile(file.path)],
-        subject: 'Session: $_sessionName',
+        subject: 'Session: ${editorState.sessionName}',
         text: 'Exported session from Session Builder',
       );
     } catch (e) {
@@ -192,6 +179,7 @@ class _StepListScreenState extends State<StepListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final editorState = ref.watch(sessionEditorProvider);
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -199,7 +187,8 @@ class _StepListScreenState extends State<StepListScreen> {
           icon: const Icon(Icons.arrow_back, color: Colors.white),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: const Text("Step List", style: TextStyle(color: Colors.white)),
+        title: Text(editorState.sessionName,
+            style: const TextStyle(color: Colors.white)),
         backgroundColor: Colors.black,
         actions: [
           TextButton(
@@ -215,13 +204,15 @@ class _StepListScreenState extends State<StepListScreen> {
             Expanded(
               child: ListView.separated(
                 padding: const EdgeInsets.all(16),
-                itemCount: _steps.length,
+                itemCount: editorState.steps.length,
                 separatorBuilder: (ctx, i) => const SizedBox(height: 10),
                 itemBuilder: (context, index) {
-                  final step = _steps[index];
-                  final isSelected = _selectedStepIndex == index;
+                  final step = editorState.steps[index];
+                  final isSelected = editorState.selectedIndex == index;
                   return GestureDetector(
-                    onTap: () => setState(() => _selectedStepIndex = index),
+                    onTap: () => ref
+                        .read(sessionEditorProvider.notifier)
+                        .selectStep(index),
                     child: Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
@@ -299,12 +290,9 @@ class _StepListScreenState extends State<StepListScreen> {
                       ),
                       const SizedBox(width: 10),
                       InkWell(
-                        onTap: () {
-                          // Simple cycler for demo
-                          setState(() {
-                            _crossfadeSeconds = (_crossfadeSeconds % 30) + 1;
-                          });
-                        },
+                        onTap: () => ref
+                            .read(sessionEditorProvider.notifier)
+                            .cycleCrossfade(),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 16,
@@ -315,7 +303,7 @@ class _StepListScreenState extends State<StepListScreen> {
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: Text(
-                            "${_crossfadeSeconds}s",
+                            "${editorState.crossfadeSeconds}s",
                             style: const TextStyle(color: Colors.white),
                           ),
                         ),
@@ -343,7 +331,7 @@ class _StepListScreenState extends State<StepListScreen> {
 
                   const SizedBox(height: 15),
                   Text(
-                    _calculateTotalDuration(),
+                    editorState.totalDurationFormatted,
                     style: const TextStyle(color: Colors.white, fontSize: 14),
                   ),
                 ],

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/data/presets_repository.dart';
 import 'package:session_builder_mobile/src/rust/frb_generated.dart';
 import 'package:session_builder_mobile/ui/screens/home_screen.dart';
@@ -8,7 +9,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
   await PresetsRepository().loadPresets();
-  runApp(const MyApp());
+  runApp(const ProviderScope(child: MyApp()));
 }
 
 class MyApp extends StatelessWidget {
