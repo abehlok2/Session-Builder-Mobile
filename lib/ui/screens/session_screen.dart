@@ -12,7 +12,6 @@ class SessionScreen extends StatefulWidget {
 }
 
 class _SessionScreenState extends State<SessionScreen> {
-  // Mock State
   int _activeStepIndex = 0;
   bool _isPlaying = false;
   double _progressValue = 0.0; // 0.0 to 1.0
@@ -60,6 +59,46 @@ class _SessionScreenState extends State<SessionScreen> {
       }
     } catch (e) {
       debugPrint("Error toggling playback: $e");
+    }
+  }
+
+  /// Calculate the start time in seconds for a given step index
+  double _getStepStartTime(int stepIndex) {
+    double startTime = 0.0;
+    for (int i = 0; i < stepIndex && i < widget.steps.length; i++) {
+      final durationStr =
+          widget.steps[i]['duration'].toString().replaceAll('s', '');
+      final duration = double.tryParse(durationStr) ?? 0.0;
+      startTime += duration;
+    }
+    return startTime;
+  }
+
+  Future<void> _skipToPreviousStep() async {
+    if (_activeStepIndex > 0) {
+      final newIndex = _activeStepIndex - 1;
+      final startTime = _getStepStartTime(newIndex);
+
+      try {
+        startFrom(position: startTime);
+        setState(() => _activeStepIndex = newIndex);
+      } catch (e) {
+        debugPrint("Error skipping to previous step: $e");
+      }
+    }
+  }
+
+  Future<void> _skipToNextStep() async {
+    if (_activeStepIndex < widget.steps.length - 1) {
+      final newIndex = _activeStepIndex + 1;
+      final startTime = _getStepStartTime(newIndex);
+
+      try {
+        startFrom(position: startTime);
+        setState(() => _activeStepIndex = newIndex);
+      } catch (e) {
+        debugPrint("Error skipping to next step: $e");
+      }
     }
   }
 
@@ -180,25 +219,20 @@ class _SessionScreenState extends State<SessionScreen> {
                   ),
 
                   const SizedBox(height: 10),
-                  const Text(
-                    "Playback controls here",
-                    style: TextStyle(color: Colors.white38, fontSize: 12),
-                  ),
-                  const SizedBox(height: 10),
 
                   // Playback Buttons
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // Using generic icons to mock standard media controls usually seen
                       IconButton(
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.skip_previous,
-                          color: Colors.white,
+                          color: _activeStepIndex > 0
+                              ? Colors.white
+                              : Colors.white38,
                         ),
-                        onPressed: () {
-                          /* Prev */
-                        },
+                        onPressed:
+                            _activeStepIndex > 0 ? _skipToPreviousStep : null,
                       ),
                       const SizedBox(width: 20),
                       IconButton(
@@ -211,10 +245,15 @@ class _SessionScreenState extends State<SessionScreen> {
                       ),
                       const SizedBox(width: 20),
                       IconButton(
-                        icon: const Icon(Icons.skip_next, color: Colors.white),
-                        onPressed: () {
-                          /* Next */
-                        },
+                        icon: Icon(
+                          Icons.skip_next,
+                          color: _activeStepIndex < widget.steps.length - 1
+                              ? Colors.white
+                              : Colors.white38,
+                        ),
+                        onPressed: _activeStepIndex < widget.steps.length - 1
+                            ? _skipToNextStep
+                            : null,
                       ),
                     ],
                   ),

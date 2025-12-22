@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:session_builder_mobile/data/presets_repository.dart';
+import 'package:session_builder_mobile/logic/audio_helpers.dart';
+import 'package:session_builder_mobile/src/rust/mobile_api.dart';
 
 class StepBuilderScreen extends StatefulWidget {
   const StepBuilderScreen({super.key});
@@ -28,6 +30,10 @@ class _StepBuilderScreenState extends State<StepBuilderScreen> {
 
   @override
   void dispose() {
+    // Stop any test playback when leaving the screen
+    if (_isTestPlaying) {
+      stopAudioSession();
+    }
     _durationController.dispose();
     super.dispose();
   }
@@ -78,7 +84,8 @@ class _StepBuilderScreenState extends State<StepBuilderScreen> {
   }
 
   void _loadBackground() async {
-    // Mock file loading
+    // TODO: Integrate with file picker when available
+    // For now, simulating a loaded track
     setState(() => _backgroundTrack = "rain_sounds.mp3");
   }
 
@@ -86,13 +93,39 @@ class _StepBuilderScreenState extends State<StepBuilderScreen> {
     setState(() => _backgroundTrack = null);
   }
 
-  void _toggleTest() {
-    setState(() => _isTestPlaying = !_isTestPlaying);
-    // TODO: Implement actual audio streaming test
+  Future<void> _toggleTest() async {
+    if (_isTestPlaying) {
+      // Stop the test playback
+      await stopAudioSession();
+      setState(() => _isTestPlaying = false);
+    } else {
+      // Build a test step from current settings
+      final testStep = {
+        "binaural": _binauralPreset,
+        "binaural_volume": _binauralVolume,
+        "noise": _noisePreset,
+        "noise_volume": _noiseVolume,
+        "track": _backgroundTrack ?? "None",
+        "track_volume": _backgroundVolume,
+        "duration": "30s", // Short test duration
+      };
+
+      try {
+        final trackJson = AudioHelpers.generateTrackJson(steps: [testStep]);
+        await startAudioSession(trackJson: trackJson, startTime: 0.0);
+        setState(() => _isTestPlaying = true);
+      } catch (e) {
+        debugPrint("Error starting test playback: $e");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Error starting test: $e")),
+          );
+        }
+      }
+    }
   }
 
   void _addStep() {
-    // Mock return data
     final newStep = {
       "binaural": _binauralPreset,
       "binaural_volume": _binauralVolume,
@@ -264,7 +297,7 @@ class _StepBuilderScreenState extends State<StepBuilderScreen> {
                                 const Padding(
                                   padding: EdgeInsets.only(bottom: 5),
                                   child: Text(
-                                    "Loaded Track Name", // Placeholder as per wireframe
+                                    "No track loaded",
                                     style: TextStyle(
                                       color: Colors.white38,
                                       fontSize: 10,
@@ -391,8 +424,8 @@ class _StepBuilderScreenState extends State<StepBuilderScreen> {
                           iconSize: 48,
                           color: Colors.white,
                           icon: Icon(
-                            _isTestPlaying ? Icons.pause : Icons.pause,
-                          ), // Wireframe shows pause bars, assuming pause icon fits better visually for "Test" active state or play for inactive. Wireframe has Pause icon (II)
+                            _isTestPlaying ? Icons.stop : Icons.play_arrow,
+                          ),
                           onPressed: _toggleTest,
                         ),
                       ],

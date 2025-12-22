@@ -1,11 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:session_builder_mobile/data/session_storage.dart';
 import 'package:session_builder_mobile/ui/screens/step_builder_screen.dart';
 import 'package:session_builder_mobile/ui/screens/session_screen.dart';
 
 class StepListScreen extends StatefulWidget {
   final List<Map<String, dynamic>>? initialSteps;
+  final String? sessionId;
+  final String? sessionName;
 
-  const StepListScreen({super.key, this.initialSteps});
+  const StepListScreen({
+    super.key,
+    this.initialSteps,
+    this.sessionId,
+    this.sessionName,
+  });
 
   @override
   State<StepListScreen> createState() => _StepListScreenState();
@@ -13,15 +22,32 @@ class StepListScreen extends StatefulWidget {
 
 class _StepListScreenState extends State<StepListScreen> {
   late List<Map<String, dynamic>> _steps;
+  late String? _sessionId;
+  late String _sessionName;
+  final SessionStorage _storage = SessionStorage();
 
   @override
   void initState() {
     super.initState();
     _steps = widget.initialSteps != null ? List.from(widget.initialSteps!) : [];
+    _sessionId = widget.sessionId;
+    _sessionName = widget.sessionName ?? 'Untitled Session';
   }
 
   int _crossfadeSeconds = 3;
   int? _selectedStepIndex;
+
+  String _calculateTotalDuration() {
+    double totalSeconds = 0;
+    for (final step in _steps) {
+      final durationStr = step['duration'].toString().replaceAll('s', '');
+      totalSeconds += double.tryParse(durationStr) ?? 0;
+    }
+    final hours = (totalSeconds / 3600).floor();
+    final minutes = ((totalSeconds % 3600) / 60).floor();
+    final seconds = (totalSeconds % 60).floor();
+    return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
 
   void _addStep() async {
     final result = await Navigator.of(
@@ -44,8 +70,77 @@ class _StepListScreenState extends State<StepListScreen> {
     }
   }
 
-  void _saveSession() {
-    debugPrint("Save Session pressed");
+  Future<void> _saveSession() async {
+    if (_steps.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Add at least one step before saving.")),
+      );
+      return;
+    }
+
+    // Show dialog to get/confirm session name
+    final nameController = TextEditingController(text: _sessionName);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.grey[900],
+        title: const Text(
+          'Save Session',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            labelText: 'Session Name',
+            labelStyle: TextStyle(color: Colors.white70),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.white54),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.white),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, nameController.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.isNotEmpty) {
+      try {
+        final session = await _storage.saveSession(
+          name: result,
+          steps: _steps,
+          crossfadeSeconds: _crossfadeSeconds,
+          existingId: _sessionId,
+        );
+        setState(() {
+          _sessionId = session.id;
+          _sessionName = session.name;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Session '${session.name}' saved!")),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Error saving session: $e")),
+          );
+        }
+      }
+    }
   }
 
   void _startSession() {
@@ -60,8 +155,39 @@ class _StepListScreenState extends State<StepListScreen> {
     ).push(MaterialPageRoute(builder: (_) => SessionScreen(steps: _steps)));
   }
 
-  void _exportSession() {
-    debugPrint("Export Session pressed");
+  Future<void> _exportSession() async {
+    if (_steps.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Add at least one step before exporting.")),
+      );
+      return;
+    }
+
+    try {
+      // Create a temporary session model for export
+      final session = SessionModel(
+        id: _sessionId ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        name: _sessionName,
+        steps: _steps,
+        crossfadeSeconds: _crossfadeSeconds,
+      );
+
+      // Export to file
+      final file = await _storage.exportSessionToFile(session);
+
+      // Share the file
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: 'Session: $_sessionName',
+        text: 'Exported session from Session Builder',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error exporting session: $e")),
+        );
+      }
+    }
   }
 
   @override
@@ -216,9 +342,9 @@ class _StepListScreenState extends State<StepListScreen> {
                   ),
 
                   const SizedBox(height: 15),
-                  const Text(
-                    "00:15:00", // Mock total duration
-                    style: TextStyle(color: Colors.white, fontSize: 14),
+                  Text(
+                    _calculateTotalDuration(),
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
                   ),
                 ],
               ),
