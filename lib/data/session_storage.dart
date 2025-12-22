@@ -3,6 +3,20 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+abstract class SessionStorageBase {
+  Future<List<SessionModel>> loadSessions();
+  Future<SessionModel> saveSession({
+    required String name,
+    required List<Map<String, dynamic>> steps,
+    int crossfadeSeconds,
+    String? existingId,
+  });
+  Future<void> deleteSession(String id);
+  Future<void> reorderSession(int oldIndex, int newIndex);
+  Future<File> exportSessionToFile(SessionModel session);
+  void clearCache();
+}
+
 class SessionModel {
   final String id;
   final String name;
@@ -68,7 +82,7 @@ class SessionModel {
       );
 }
 
-class SessionStorage {
+class SessionStorage implements SessionStorageBase {
   static final SessionStorage _instance = SessionStorage._internal();
   factory SessionStorage() => _instance;
   SessionStorage._internal();
