@@ -1,4 +1,4 @@
-use crate::audio_io;
+use crate::audio_io::{self, PlaybackState};
 use crate::command::Command;
 use crate::config::CONFIG;
 use crate::models::TrackData;
@@ -11,7 +11,7 @@ use ringbuf::HeapRb;
 use flutter_rust_bridge::frb;
 use cpal::traits::HostTrait;
 use hound::{SampleFormat, WavSpec, WavWriter};
-use std::sync::atomic::{AtomicU64, AtomicBool};
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::sync::Arc;
 
 struct EngineState {
@@ -83,10 +83,22 @@ pub fn start_audio_session(track_json: String, start_time: Option<f64>) -> anyho
     // Create stop channel
     let (stop_tx, stop_rx) = crossbeam::channel::unbounded();
 
+    // Create shared playback state atomics
+    let elapsed_samples = Arc::new(AtomicU64::new(0));
+    let current_step = Arc::new(AtomicU64::new(0));
+    let is_paused = Arc::new(AtomicBool::new(false));
+
+    // Clone Arcs for the audio thread
+    let playback_state = PlaybackState {
+        elapsed_samples: Arc::clone(&elapsed_samples),
+        current_step: Arc::clone(&current_step),
+        is_paused: Arc::clone(&is_paused),
+    };
+
     // Spawn audio thread
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            audio_io::run_audio_stream(scheduler, cons, stop_rx);
+            audio_io::run_audio_stream(scheduler, cons, stop_rx, Some(playback_state));
         }));
         if let Err(e) = result {
             // Try to downcast the panic to string
@@ -105,9 +117,9 @@ pub fn start_audio_session(track_json: String, start_time: Option<f64>) -> anyho
     *guard = Some(EngineState {
         command_producer: prod,
         stop_sender: stop_tx,
-        elapsed_samples: Arc::new(AtomicU64::new(0)),
-        current_step: Arc::new(AtomicU64::new(0)),
-        is_paused: Arc::new(AtomicBool::new(false)),
+        elapsed_samples,
+        current_step,
+        is_paused,
         sample_rate,
     });
 
@@ -414,4 +426,61 @@ pub fn generate_track_waveform(track_json: String, samples_per_second: u32) -> a
     }
 
     Ok(waveform)
+}
+
+/// Get the current playback position in seconds
+/// Returns None if no audio session is active
+pub fn get_playback_position() -> Option<f64> {
+    let guard = ENGINE.lock();
+    guard.as_ref().map(|state| {
+        let samples = state.elapsed_samples.load(Ordering::Relaxed);
+        samples as f64 / state.sample_rate as f64
+    })
+}
+
+/// Get the number of elapsed samples since playback started
+/// Returns None if no audio session is active
+pub fn get_elapsed_samples() -> Option<u64> {
+    let guard = ENGINE.lock();
+    guard.as_ref().map(|state| state.elapsed_samples.load(Ordering::Relaxed))
+}
+
+/// Get the current step index (0-based)
+/// Returns None if no audio session is active
+pub fn get_current_step() -> Option<u64> {
+    let guard = ENGINE.lock();
+    guard.as_ref().map(|state| state.current_step.load(Ordering::Relaxed))
+}
+
+/// Check if playback is currently paused
+/// Returns None if no audio session is active
+pub fn get_is_paused() -> Option<bool> {
+    let guard = ENGINE.lock();
+    guard.as_ref().map(|state| state.is_paused.load(Ordering::Relaxed))
+}
+
+/// Get complete playback status as a struct
+/// Returns position in seconds, current step index, and paused state
+/// Returns None if no audio session is active
+pub fn get_playback_status() -> Option<PlaybackStatus> {
+    let guard = ENGINE.lock();
+    guard.as_ref().map(|state| PlaybackStatus {
+        position_seconds: state.elapsed_samples.load(Ordering::Relaxed) as f64 / state.sample_rate as f64,
+        current_step: state.current_step.load(Ordering::Relaxed),
+        is_paused: state.is_paused.load(Ordering::Relaxed),
+        sample_rate: state.sample_rate,
+    })
+}
+
+/// Playback status information returned by get_playback_status
+#[derive(Clone, Debug)]
+pub struct PlaybackStatus {
+    /// Current playback position in seconds
+    pub position_seconds: f64,
+    /// Current step index (0-based)
+    pub current_step: u64,
+    /// Whether playback is paused
+    pub is_paused: bool,
+    /// Sample rate of the audio session
+    pub sample_rate: u32,
 }

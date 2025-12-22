@@ -109,3 +109,48 @@ Future<Float32List> generateTrackWaveform({
   trackJson: trackJson,
   samplesPerSecond: samplesPerSecond,
 );
+
+/// Get the current playback position in seconds.
+/// Returns null if no audio session is active.
+Future<double?> getPlaybackPosition() =>
+    RustLib.instance.api.crateMobileApiGetPlaybackPosition();
+
+/// Get the number of elapsed samples since playback started.
+/// Returns null if no audio session is active.
+Future<BigInt?> getElapsedSamples() =>
+    RustLib.instance.api.crateMobileApiGetElapsedSamples();
+
+/// Get the current step index (0-based).
+/// Returns null if no audio session is active.
+Future<BigInt?> getCurrentStep() =>
+    RustLib.instance.api.crateMobileApiGetCurrentStep();
+
+/// Check if playback is currently paused.
+/// Returns null if no audio session is active.
+Future<bool?> getIsPaused() =>
+    RustLib.instance.api.crateMobileApiGetIsPaused();
+
+/// Get complete playback status.
+/// Returns position in seconds, current step index, paused state, and sample rate.
+/// Returns null if no audio session is active.
+Future<PlaybackStatus?> getPlaybackStatus() =>
+    RustLib.instance.api.crateMobileApiGetPlaybackStatus();
+
+/// Playback status information
+class PlaybackStatus {
+  /// Current playback position in seconds
+  final double positionSeconds;
+  /// Current step index (0-based)
+  final int currentStep;
+  /// Whether playback is paused
+  final bool isPaused;
+  /// Sample rate of the audio session
+  final int sampleRate;
+
+  const PlaybackStatus({
+    required this.positionSeconds,
+    required this.currentStep,
+    required this.isPaused,
+    required this.sampleRate,
+  });
+}
