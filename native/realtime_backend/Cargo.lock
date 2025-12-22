@@ -1830,6 +1830,7 @@ dependencies = [
  "js-sys",
  "lazy_static",
  "log",
+ "oboe",
  "once_cell",
  "parking_lot",
  "pollster",
