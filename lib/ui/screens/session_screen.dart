@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:session_builder_mobile/logic/audio_helpers.dart';
+import 'package:session_builder_mobile/src/rust/mobile_api.dart';
 
 class SessionScreen extends StatefulWidget {
   final List<Map<String, dynamic>> steps;
@@ -15,22 +17,51 @@ class _SessionScreenState extends State<SessionScreen> {
   bool _isPlaying = false;
   double _progressValue = 0.0; // 0.0 to 1.0
   double _volumeValue = 0.5;
+  bool _hasStarted = false;
 
-  void _togglePlayPause() {
-    setState(() {
-      _isPlaying = !_isPlaying;
-    });
-    // TODO: Connect to backend
+  @override
+  void initState() {
+    super.initState();
+    // Auto-start session
+    _startSessionPlayback();
   }
 
-  // void _stopSession() {
-  //   setState(() {
-  //     _isPlaying = false;
-  //     _progressValue = 0.0;
-  //     _activeStepIndex = 0;
-  //   });
-  //   // TODO: Stop backend
-  // }
+  @override
+  void dispose() {
+    stopAudioSession();
+    super.dispose();
+  }
+
+  Future<void> _startSessionPlayback() async {
+    try {
+      final trackJson = AudioHelpers.generateTrackJson(steps: widget.steps);
+      await startAudioSession(trackJson: trackJson, startTime: 0.0);
+      setState(() {
+        _isPlaying = true;
+        _hasStarted = true;
+      });
+    } catch (e) {
+      debugPrint("Error starting session: $e");
+    }
+  }
+
+  Future<void> _togglePlayPause() async {
+    try {
+      if (_isPlaying) {
+        await pauseAudio();
+        setState(() => _isPlaying = false);
+      } else {
+        if (!_hasStarted) {
+          await _startSessionPlayback();
+        } else {
+          await resumeAudio();
+          setState(() => _isPlaying = true);
+        }
+      }
+    } catch (e) {
+      debugPrint("Error toggling playback: $e");
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -195,7 +226,10 @@ class _SessionScreenState extends State<SessionScreen> {
                     children: [
                       Slider(
                         value: _volumeValue,
-                        onChanged: (v) => setState(() => _volumeValue = v),
+                        onChanged: (v) {
+                          setState(() => _volumeValue = v);
+                          setVolume(volume: v);
+                        },
                         activeColor: Colors.white,
                         inactiveColor: Colors.white24,
                       ),

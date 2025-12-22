@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:session_builder_mobile/data/presets_repository.dart';
 
 class StepBuilderScreen extends StatefulWidget {
   const StepBuilderScreen({super.key});
@@ -12,7 +13,7 @@ class _StepBuilderScreenState extends State<StepBuilderScreen> {
   String _binauralPreset = "F10-B";
   double _binauralVolume = 0.5;
 
-  String _noisePreset = "Brown";
+  String _noisePreset = "Brown Noise";
   double _noiseVolume = 0.5;
 
   String? _backgroundTrack; // Null means nothing loaded
@@ -31,14 +32,49 @@ class _StepBuilderScreenState extends State<StepBuilderScreen> {
     super.dispose();
   }
 
+  Future<void> _showPresetDialog(
+    String title,
+    List<String> items,
+    Function(String) onSelected,
+  ) async {
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title, style: const TextStyle(color: Colors.white)),
+        backgroundColor: Colors.grey[900],
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: ListView.builder(
+            itemCount: items.length,
+            itemBuilder: (context, index) {
+              final item = items[index];
+              return ListTile(
+                title: Text(item, style: const TextStyle(color: Colors.white)),
+                onTap: () {
+                  onSelected(item);
+                  Navigator.of(context).pop();
+                },
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
   void _selectBinauralPreset() async {
-    // Mock selection
-    setState(() => _binauralPreset = "F10-B (Alpha)");
+    final presets = PresetsRepository().getBinauralPresetNames();
+    _showPresetDialog("Select Binaural Preset", presets, (val) {
+      setState(() => _binauralPreset = val);
+    });
   }
 
   void _selectNoisePreset() async {
-    // Mock selection
-    setState(() => _noisePreset = "Pink");
+    final presets = PresetsRepository().getNoisePresetNames();
+    _showPresetDialog("Select Noise Preset", presets, (val) {
+      setState(() => _noisePreset = val);
+    });
   }
 
   void _loadBackground() async {
@@ -59,8 +95,11 @@ class _StepBuilderScreenState extends State<StepBuilderScreen> {
     // Mock return data
     final newStep = {
       "binaural": _binauralPreset,
+      "binaural_volume": _binauralVolume,
       "noise": _noisePreset,
+      "noise_volume": _noiseVolume,
       "track": _backgroundTrack ?? "None",
+      "track_volume": _backgroundVolume,
       "duration": "${int.tryParse(_durationController.text) ?? 300}s",
     };
     Navigator.of(context).pop(newStep);

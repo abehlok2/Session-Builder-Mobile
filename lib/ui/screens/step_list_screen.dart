@@ -17,23 +17,7 @@ class _StepListScreenState extends State<StepListScreen> {
   @override
   void initState() {
     super.initState();
-    _steps = widget.initialSteps != null
-        ? List.from(widget.initialSteps!)
-        : [
-            // Default/Mock data if nothing passed
-            {
-              "binaural": "100Hz + 4Hz (Theta)",
-              "noise": "Pink Noise",
-              "track": "None",
-              "duration": "5:00",
-            },
-            {
-              "binaural": "200Hz + 8Hz (Alpha)",
-              "noise": "Brown Noise",
-              "track": "Rain Sounds",
-              "duration": "10:00",
-            },
-          ];
+    _steps = widget.initialSteps != null ? List.from(widget.initialSteps!) : [];
   }
 
   int _crossfadeSeconds = 3;
@@ -65,6 +49,12 @@ class _StepListScreenState extends State<StepListScreen> {
   }
 
   void _startSession() {
+    if (_steps.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Please add at least one step to start.")),
+      );
+      return;
+    }
     Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => SessionScreen(steps: _steps)));
