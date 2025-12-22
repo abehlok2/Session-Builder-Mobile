@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/data/presets_repository.dart';
 import 'package:session_builder_mobile/logic/audio_helpers.dart';
@@ -21,8 +22,10 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
   double _noiseVolume = 0.5;
 
   String? _backgroundTrack; // Null means nothing loaded
+  String? _backgroundTrackPath; // Full file path for audio processing
   double _backgroundVolume = 0.5;
   bool _backgroundExtend = false;
+  bool _isLoadingTrack = false;
 
   final TextEditingController _durationController = TextEditingController(
     text: "300",
@@ -85,14 +88,56 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
     });
   }
 
-  void _loadBackground() async {
-    // TODO: Integrate with file picker when available
-    // For now, simulating a loaded track
-    setState(() => _backgroundTrack = "rain_sounds.mp3");
+  Future<void> _loadBackground() async {
+    if (_isLoadingTrack) return;
+
+    setState(() => _isLoadingTrack = true);
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.audio,
+        allowMultiple: false,
+        withData: false,
+        withReadStream: false,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        final file = result.files.first;
+        final fileName = file.name;
+        final filePath = file.path;
+
+        if (filePath != null) {
+          setState(() {
+            _backgroundTrack = fileName;
+            _backgroundTrackPath = filePath;
+          });
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("Could not access file path")),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("Error picking audio file: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error loading audio: $e")),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingTrack = false);
+      }
+    }
   }
 
   void _clearBackground() {
-    setState(() => _backgroundTrack = null);
+    setState(() {
+      _backgroundTrack = null;
+      _backgroundTrackPath = null;
+    });
   }
 
   Future<void> _toggleTest() async {
@@ -108,7 +153,9 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
         "noise": _noisePreset,
         "noise_volume": _noiseVolume,
         "track": _backgroundTrack ?? "None",
+        "track_path": _backgroundTrackPath,
         "track_volume": _backgroundVolume,
+        "track_extend": _backgroundExtend,
         "duration": "30s", // Short test duration
       };
 
@@ -134,7 +181,9 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
       "noise": _noisePreset,
       "noise_volume": _noiseVolume,
       "track": _backgroundTrack ?? "None",
+      "track_path": _backgroundTrackPath,
       "track_volume": _backgroundVolume,
+      "track_extend": _backgroundExtend,
       "duration": "${int.tryParse(_durationController.text) ?? 300}s",
     };
     ref.read(sessionEditorProvider.notifier).addStep(newStep);
@@ -257,12 +306,21 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                               SizedBox(
                                 width: double.infinity,
                                 child: OutlinedButton(
-                                  onPressed: _loadBackground,
+                                  onPressed: _isLoadingTrack ? null : _loadBackground,
                                   style: _controlButtonStyle(),
-                                  child: const Text(
-                                    "Load",
-                                    style: TextStyle(color: Colors.white),
-                                  ),
+                                  child: _isLoadingTrack
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ),
+                                        )
+                                      : const Text(
+                                          "Load",
+                                          style: TextStyle(color: Colors.white),
+                                        ),
                                 ),
                               ),
                               const SizedBox(height: 8),
