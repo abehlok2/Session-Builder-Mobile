@@ -1246,12 +1246,15 @@ fn get_i64_opt(params: &HashMap<String, Value>, key: &str) -> Option<i64> {
 
 impl NoiseSweptNotchVoice {
     pub fn new(params: &HashMap<String, Value>, duration: f32, sample_rate: f32) -> Self {
+        println!("RUST LOG: NoiseSweptNotchVoice::new called. duration: {}, sample_rate: {}", duration, sample_rate);
         let amp = get_f32(params, "amp", 1.0);
         let noise_params = noise_params_from_json(params, duration, sample_rate as u32, false);
+        println!("RUST LOG: noise_params parsed. duration_seconds: {}", noise_params.duration_seconds);
 
         let calibration_frames = ((duration * sample_rate) as usize)
             .min((sample_rate as usize) * 10)
             .max(1);
+        println!("RUST LOG: creating StreamingNoise with calibration_frames: {}", calibration_frames);
         let (generator, cached_peak) = StreamingNoise::new_with_calibrated_peak(
             &noise_params,
             sample_rate as u32,

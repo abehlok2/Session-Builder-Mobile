@@ -5,11 +5,10 @@ use crate::scheduler::TrackScheduler;
 use crate::voice_loader;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
-use ringbuf::traits::{Split, Producer, Consumer};
+use ringbuf::traits::{Split, Producer};
 use ringbuf::HeapRb;
-use std::sync::Arc;
 use flutter_rust_bridge::frb;
-use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::traits::HostTrait;
 
 struct EngineState {
     command_producer: ringbuf::HeapProd<Command>,
@@ -30,11 +29,17 @@ pub fn init_app() {
 }
 
 pub fn start_audio_session(track_json: String, start_time: Option<f64>) -> anyhow::Result<()> {
+    println!("RUST LOG: start_audio_session called");
+    println!("RUST LOG: track_json len: {}", track_json.len());
+
     // Stop any existing session
     stop_audio_session();
 
     let track_data: TrackData = serde_json::from_str(&track_json)
         .map_err(|e| anyhow::anyhow!("Invalid track JSON: {}", e))?;
+    
+    println!("RUST LOG: track_data parsed successfully");
+
 
     // Device setup
     let host = cpal::default_host();
@@ -67,7 +72,19 @@ pub fn start_audio_session(track_json: String, start_time: Option<f64>) -> anyho
 
     // Spawn audio thread
     std::thread::spawn(move || {
-        audio_io::run_audio_stream(scheduler, cons, stop_rx);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            audio_io::run_audio_stream(scheduler, cons, stop_rx);
+        }));
+        if let Err(e) = result {
+            // Try to downcast the panic to string
+            if let Some(s) = e.downcast_ref::<&str>() {
+                 println!("RUST LOG: FATAL: Audio thread panicked: {}", s);
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                 println!("RUST LOG: FATAL: Audio thread panicked: {}", s);
+            } else {
+                 println!("RUST LOG: FATAL: Audio thread panicked with unknown error");
+            }
+        }
     });
 
     // Store state

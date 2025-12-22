@@ -253,8 +253,13 @@ impl FftNoiseGenerator {
             .unwrap_or(1.0);
         let seed = params.seed.unwrap_or(1).max(0) as u64;
 
+        // Limit the FFT buffer size to ~3s max to prevent huge allocations for long steps.
+        // This ensures "chunked streaming" behavior where we regenerate new noise blocks repeatedly.
         let requested = (params.duration_seconds.max(0.0) * sample_rate) as usize;
-        let mut size = if requested > 0 { requested } else { 1 << 17 };
+        let default_size = 1 << 17; // ~3s at 44.1k
+        // Use requested size ONLY if it's smaller than default (e.g. for very short precise clips)
+        // Otherwise use default chunk size.
+        let mut size = if requested > 0 && requested < default_size { requested } else { default_size };
         if size < 8 {
             size = 8;
         }
