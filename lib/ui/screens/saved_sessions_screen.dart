@@ -1,109 +1,44 @@
 import 'package:flutter/material.dart';
-import 'package:session_builder_mobile/data/session_storage.dart';
-import 'package:session_builder_mobile/ui/screens/step_list_screen.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:session_builder_mobile/logic/state/playback_provider.dart';
+import 'package:session_builder_mobile/logic/state/session_editor_provider.dart';
+import 'package:session_builder_mobile/logic/state/sessions_repository_provider.dart';
 import 'package:session_builder_mobile/ui/screens/session_screen.dart';
+import 'package:session_builder_mobile/ui/screens/step_list_screen.dart';
 
-class SavedSessionsScreen extends StatefulWidget {
+class SavedSessionsScreen extends ConsumerStatefulWidget {
   const SavedSessionsScreen({super.key});
 
   @override
-  State<SavedSessionsScreen> createState() => _SavedSessionsScreenState();
+  ConsumerState<SavedSessionsScreen> createState() =>
+      _SavedSessionsScreenState();
 }
 
-class _SavedSessionsScreenState extends State<SavedSessionsScreen> {
-  final SessionStorage _storage = SessionStorage();
-  List<SessionModel> _savedSessions = [];
-  bool _isLoading = true;
+class _SavedSessionsScreenState extends ConsumerState<SavedSessionsScreen> {
   int? _selectedIndex;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadSessions();
-  }
-
-  Future<void> _loadSessions() async {
-    setState(() => _isLoading = true);
-    try {
-      final sessions = await _storage.loadSessions();
-      setState(() {
-        _savedSessions = sessions;
-        _isLoading = false;
-      });
-    } catch (e) {
-      debugPrint('Error loading sessions: $e');
-      setState(() => _isLoading = false);
-    }
-  }
-
-  void _loadSession() {
-    if (_selectedIndex == null) return;
-
-    final session = _savedSessions[_selectedIndex!];
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: Colors.grey[900],
-        title: const Text(
-          "Load Session",
-          style: TextStyle(color: Colors.white),
+  void _loadSession(SessionModel session) {
+    ref.read(sessionEditorProvider.notifier).loadFromModel(session);
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => StepListScreen(
+          initialSteps: session.steps,
+          sessionId: session.id,
+          sessionName: session.name,
         ),
-        content: Text(
-          "Do you want to Edit '${session.name}' or Start it immediately?",
-          style: const TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              // Navigate to Edit (Step List Screen)
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => StepListScreen(
-                    initialSteps: List<Map<String, dynamic>>.from(
-                      session.steps,
-                    ),
-                    sessionId: session.id,
-                    sessionName: session.name,
-                  ),
-                ),
-              );
-            },
-            child: const Text("Edit"),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              if (session.steps.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("This session has no steps to play."),
-                  ),
-                );
-                return;
-              }
-              // Navigate to Start (Session Screen)
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => SessionScreen(
-                    steps: List<Map<String, dynamic>>.from(session.steps),
-                  ),
-                ),
-              );
-            },
-            child: const Text("Start"),
-          ),
-        ],
       ),
     );
   }
 
-  Future<void> _deleteSession() async {
-    if (_selectedIndex == null) return;
+  Future<void> _startSession(SessionModel session) async {
+    ref.read(sessionEditorProvider.notifier).loadFromModel(session);
+    await ref.read(playbackProvider.notifier).start(session.steps);
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const SessionScreen()),
+    );
+  }
 
-    final session = _savedSessions[_selectedIndex!];
-
+  Future<void> _deleteSession(SessionModel session) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -130,38 +65,32 @@ class _SavedSessionsScreenState extends State<SavedSessionsScreen> {
     );
 
     if (confirmed == true) {
-      await _storage.deleteSession(session.id);
+      await ref
+          .read(sessionsRepositoryProvider.notifier)
+          .deleteSession(session.id);
       setState(() {
-        _savedSessions.removeAt(_selectedIndex!);
         _selectedIndex = null;
       });
     }
   }
 
-  Future<void> _moveUp() async {
-    if (_selectedIndex != null && _selectedIndex! > 0) {
-      await _storage.reorderSession(_selectedIndex!, _selectedIndex! - 1);
-      setState(() {
-        final item = _savedSessions.removeAt(_selectedIndex!);
-        _savedSessions.insert(_selectedIndex! - 1, item);
-        _selectedIndex = _selectedIndex! - 1;
-      });
-    }
-  }
-
-  Future<void> _moveDown() async {
-    if (_selectedIndex != null && _selectedIndex! < _savedSessions.length - 1) {
-      await _storage.reorderSession(_selectedIndex!, _selectedIndex! + 2);
-      setState(() {
-        final item = _savedSessions.removeAt(_selectedIndex!);
-        _savedSessions.insert(_selectedIndex! + 1, item);
-        _selectedIndex = _selectedIndex! + 1;
-      });
-    }
+  Future<void> _move(int delta) async {
+    final sessionsValue = ref.read(sessionsRepositoryProvider);
+    if (_selectedIndex == null || sessionsValue is! AsyncData) return;
+    final sessions = sessionsValue.value;
+    final newIndex = _selectedIndex! + delta;
+    if (newIndex < 0 || newIndex >= sessions.length) return;
+    await ref
+        .read(sessionsRepositoryProvider.notifier)
+        .reorderSession(_selectedIndex!, newIndex);
+    setState(() {
+      _selectedIndex = newIndex;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final sessionsAsync = ref.watch(sessionsRepositoryProvider);
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -178,77 +107,82 @@ class _SavedSessionsScreenState extends State<SavedSessionsScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // List of Sessions
             Expanded(
-              child: _isLoading
-                  ? const Center(
-                      child: CircularProgressIndicator(color: Colors.white),
-                    )
-                  : _savedSessions.isEmpty
-                      ? const Center(
-                          child: Text(
-                            "No saved sessions yet.\nCreate a new session and save it!",
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: Colors.white54),
-                          ),
-                        )
-                      : ListView.separated(
-                          padding: const EdgeInsets.all(16),
-                          itemCount: _savedSessions.length,
-                          separatorBuilder: (ctx, i) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            final session = _savedSessions[index];
-                            final isSelected = _selectedIndex == index;
-                            return GestureDetector(
-                              onTap: () =>
-                                  setState(() => _selectedIndex = index),
-                              child: Container(
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: isSelected
-                                      ? Colors.white10
-                                      : Colors.transparent,
-                                  border: Border.all(
-                                    color: isSelected
-                                        ? Colors.white
-                                        : Colors.white30,
-                                    width: isSelected ? 2 : 1,
-                                  ),
-                                  borderRadius: BorderRadius.circular(15),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      session.name,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 5),
-                                    Text(
-                                      "# Steps: ${session.stepsCount}",
-                                      style: const TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 14,
-                                      ),
-                                    ),
-                                    Text(
-                                      "Total Duration: ${session.totalDuration}",
-                                      style: const TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 14,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
+              child: sessionsAsync.when(
+                loading: () => const Center(
+                  child: CircularProgressIndicator(color: Colors.white),
+                ),
+                error: (e, _) => Center(
+                  child: Text(
+                    'Error: $e',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ),
+                data: (sessions) => sessions.isEmpty
+                    ? const Center(
+                        child: Text(
+                          "No saved sessions yet.\nCreate a new session and save it!",
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white54),
                         ),
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: sessions.length,
+                        separatorBuilder: (ctx, i) =>
+                            const SizedBox(height: 10),
+                        itemBuilder: (context, index) {
+                          final session = sessions[index];
+                          final isSelected = _selectedIndex == index;
+                          return GestureDetector(
+                            onTap: () => setState(() => _selectedIndex = index),
+                            child: Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? Colors.white10
+                                    : Colors.transparent,
+                                border: Border.all(
+                                  color: isSelected
+                                      ? Colors.white
+                                      : Colors.white30,
+                                  width: isSelected ? 2 : 1,
+                                ),
+                                borderRadius: BorderRadius.circular(15),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    session.name,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    "# Steps: ${session.stepsCount}",
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  Text(
+                                    "Total Duration: ${session.totalDuration}",
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
             ),
 
             // Bottom Panel
@@ -262,16 +196,65 @@ class _SavedSessionsScreenState extends State<SavedSessionsScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      _buildActionButton("Move Up", _moveUp),
-                      _buildActionButton("Load", _loadSession),
+                      _buildActionButton("Move Up", () => _move(-1)),
+                      _buildActionButton(
+                        "Load",
+                        () {
+                          final sessionsValue = ref.read(
+                            sessionsRepositoryProvider,
+                          );
+                          if (_selectedIndex != null &&
+                              sessionsValue is AsyncData &&
+                              sessionsValue.value.length > _selectedIndex!) {
+                            _loadSession(
+                              sessionsValue.value[_selectedIndex!],
+                            );
+                          }
+                        },
+                      ),
                     ],
                   ),
                   const SizedBox(height: 15),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      _buildActionButton("Move Down", _moveDown),
-                      _buildActionButton("Delete", _deleteSession),
+                      _buildActionButton("Move Down", () => _move(1)),
+                      _buildActionButton(
+                        "Delete",
+                        () {
+                          final sessionsValue = ref.read(
+                            sessionsRepositoryProvider,
+                          );
+                          if (_selectedIndex != null &&
+                              sessionsValue is AsyncData &&
+                              sessionsValue.value.length > _selectedIndex!) {
+                            _deleteSession(
+                              sessionsValue.value[_selectedIndex!],
+                            );
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 15),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildActionButton(
+                        "Start",
+                        () {
+                          final sessionsValue = ref.read(
+                            sessionsRepositoryProvider,
+                          );
+                          if (_selectedIndex != null &&
+                              sessionsValue is AsyncData &&
+                              sessionsValue.value.length > _selectedIndex!) {
+                            _startSession(
+                              sessionsValue.value[_selectedIndex!],
+                            );
+                          }
+                        },
+                      ),
                     ],
                   ),
                 ],

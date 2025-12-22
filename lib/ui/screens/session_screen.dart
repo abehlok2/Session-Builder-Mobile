@@ -3,14 +3,15 @@ import 'package:flutter/material.dart';
 import 'package:session_builder_mobile/logic/audio_helpers.dart';
 import 'package:session_builder_mobile/services/audio_session_service.dart';
 import 'package:session_builder_mobile/src/rust/mobile_api.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:session_builder_mobile/logic/state/playback_provider.dart';
+import 'package:session_builder_mobile/logic/state/session_editor_provider.dart';
 
-class SessionScreen extends StatefulWidget {
-  final List<Map<String, dynamic>> steps;
-
-  const SessionScreen({super.key, required this.steps});
+class SessionScreen extends ConsumerStatefulWidget {
+  const SessionScreen({super.key});
 
   @override
-  State<SessionScreen> createState() => _SessionScreenState();
+  ConsumerState<SessionScreen> createState() => _SessionScreenState();
 }
 
 class _SessionScreenState extends State<SessionScreen> {
@@ -213,6 +214,10 @@ class _SessionScreenState extends State<SessionScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final editorState = ref.watch(sessionEditorProvider);
+    final playbackState = ref.watch(playbackProvider);
+    final playbackNotifier = ref.read(playbackProvider.notifier);
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -230,11 +235,11 @@ class _SessionScreenState extends State<SessionScreen> {
             Expanded(
               child: ListView.separated(
                 padding: const EdgeInsets.all(16),
-                itemCount: widget.steps.length,
+                itemCount: editorState.steps.length,
                 separatorBuilder: (ctx, i) => const SizedBox(height: 10),
                 itemBuilder: (context, index) {
-                  final step = widget.steps[index];
-                  final isActive = index == _activeStepIndex;
+                  final step = editorState.steps[index];
+                  final isActive = index == playbackState.activeStepIndex;
                   return Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
@@ -255,9 +260,8 @@ class _SessionScreenState extends State<SessionScreen> {
                               Text(
                                 "Binaural: ${step['binaural']}",
                                 style: TextStyle(
-                                  color: isActive
-                                      ? Colors.white
-                                      : Colors.white70,
+                                  color:
+                                      isActive ? Colors.white : Colors.white70,
                                   fontSize: 14,
                                   fontWeight: isActive
                                       ? FontWeight.bold
@@ -343,32 +347,43 @@ class _SessionScreenState extends State<SessionScreen> {
                       IconButton(
                         icon: Icon(
                           Icons.skip_previous,
-                          color: _activeStepIndex > 0
+                          color: playbackState.activeStepIndex > 0
                               ? Colors.white
                               : Colors.white38,
                         ),
-                        onPressed:
-                            _activeStepIndex > 0 ? _skipToPreviousStep : null,
+                        onPressed: playbackState.activeStepIndex > 0
+                            ? () => playbackNotifier.skipToStep(
+                                  playbackState.activeStepIndex - 1,
+                                  editorState.steps,
+                                )
+                            : null,
                       ),
                       const SizedBox(width: 20),
                       IconButton(
                         iconSize: 48,
                         icon: Icon(
-                          _isPlaying ? Icons.pause : Icons.play_arrow,
+                          playbackState.isPlaying
+                              ? Icons.pause
+                              : Icons.play_arrow,
                           color: Colors.white,
                         ),
-                        onPressed: _togglePlayPause,
+                        onPressed: playbackNotifier.togglePlayPause,
                       ),
                       const SizedBox(width: 20),
                       IconButton(
                         icon: Icon(
                           Icons.skip_next,
-                          color: _activeStepIndex < widget.steps.length - 1
+                          color: playbackState.activeStepIndex <
+                                  editorState.steps.length - 1
                               ? Colors.white
                               : Colors.white38,
                         ),
-                        onPressed: _activeStepIndex < widget.steps.length - 1
-                            ? _skipToNextStep
+                        onPressed: playbackState.activeStepIndex <
+                                editorState.steps.length - 1
+                            ? () => playbackNotifier.skipToStep(
+                                  playbackState.activeStepIndex + 1,
+                                  editorState.steps,
+                                )
                             : null,
                       ),
                     ],
@@ -380,16 +395,13 @@ class _SessionScreenState extends State<SessionScreen> {
                   Column(
                     children: [
                       Slider(
-                        value: _volumeValue,
-                        onChanged: (v) {
-                          setState(() => _volumeValue = v);
-                          setVolume(volume: v);
-                        },
+                        value: playbackState.volume,
+                        onChanged: (v) => playbackNotifier.setVolumeLevel(v),
                         activeColor: Colors.white,
                         inactiveColor: Colors.white24,
                       ),
                       Text(
-                        _volumeValue.toStringAsFixed(1),
+                        playbackState.volume.toStringAsFixed(1),
                         style: const TextStyle(
                           color: Colors.white70,
                           fontSize: 12,

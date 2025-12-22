@@ -1,17 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/data/presets_repository.dart';
 import 'package:session_builder_mobile/logic/audio_helpers.dart';
+import 'package:session_builder_mobile/logic/state/session_editor_provider.dart';
 import 'package:session_builder_mobile/src/rust/mobile_api.dart';
 
-class StepBuilderScreen extends StatefulWidget {
+class StepBuilderScreen extends ConsumerStatefulWidget {
   const StepBuilderScreen({super.key});
 
   @override
-  State<StepBuilderScreen> createState() => _StepBuilderScreenState();
+  ConsumerState<StepBuilderScreen> createState() => _StepBuilderScreenState();
 }
 
-class _StepBuilderScreenState extends State<StepBuilderScreen> {
+class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
   // State variables matches wireframe
   String _binauralPreset = "F10-B";
   double _binauralVolume = 0.5;
@@ -184,7 +186,8 @@ class _StepBuilderScreenState extends State<StepBuilderScreen> {
       "track_extend": _backgroundExtend,
       "duration": "${int.tryParse(_durationController.text) ?? 300}s",
     };
-    Navigator.of(context).pop(newStep);
+    ref.read(sessionEditorProvider.notifier).addStep(newStep);
+    Navigator.of(context).pop();
   }
 
   @override

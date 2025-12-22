@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/data/presets_repository.dart';
 import 'package:session_builder_mobile/services/audio_session_service.dart';
 import 'package:session_builder_mobile/src/rust/frb_generated.dart';
@@ -16,8 +17,7 @@ Future<void> main() async {
 
   // Load presets
   await PresetsRepository().loadPresets();
-
-  runApp(const MyApp());
+  runApp(const ProviderScope(child: MyApp()));
 }
 
 class MyApp extends StatelessWidget {
