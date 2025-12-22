@@ -44,10 +44,19 @@ anyhow = "1.0"
 lazy_static = "1.4"
 flutter_rust_bridge = "=2.11.1"
 log = "0.4"
+backtrace = "0.3"
+
 
 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal = "0.15.3"
 ctrlc = "3"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.13"
 oboe = { version = "0.6", features = ["shared-stdcxx"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+oslog = "0.1"
+

@@ -38,19 +38,20 @@ lazy_static! {
 pub fn init_app() {
     // Default initialization logic for the Rust environment
     flutter_rust_bridge::setup_default_user_utils();
+    crate::logging::init_logging();
 }
 
 pub fn start_audio_session(track_json: String, start_time: Option<f64>) -> anyhow::Result<()> {
-    println!("RUST LOG: start_audio_session called");
-    println!("RUST LOG: track_json len: {}", track_json.len());
+    log::info!("start_audio_session called");
+    log::info!("track_json len: {}", track_json.len());
 
-    // Stop any existing session
+    // Stop existing session
     stop_audio_session();
 
     let track_data: TrackData = serde_json::from_str(&track_json)
         .map_err(|e| anyhow::anyhow!("Invalid track JSON: {}", e))?;
     
-    println!("RUST LOG: track_data parsed successfully");
+    log::info!("track_data parsed successfully");
 
 
     // Device setup
@@ -90,11 +91,11 @@ pub fn start_audio_session(track_json: String, start_time: Option<f64>) -> anyho
         if let Err(e) = result {
             // Try to downcast the panic to string
             if let Some(s) = e.downcast_ref::<&str>() {
-                 println!("RUST LOG: FATAL: Audio thread panicked: {}", s);
+                 log::error!("FATAL: Audio thread panicked: {}", s);
             } else if let Some(s) = e.downcast_ref::<String>() {
-                 println!("RUST LOG: FATAL: Audio thread panicked: {}", s);
+                 log::error!("FATAL: Audio thread panicked: {}", s);
             } else {
-                 println!("RUST LOG: FATAL: Audio thread panicked with unknown error");
+                 log::error!("FATAL: Audio thread panicked with unknown error");
             }
         }
     });
@@ -283,7 +284,7 @@ pub fn render_full_wav(track_json: String, out_path: String) -> anyhow::Result<(
     let mut writer = WavWriter::create(&output_path, spec)
         .map_err(|e| anyhow::anyhow!("Failed to create WAV file: {}", e))?;
 
-    println!("Rendering full track: {} frames at {} Hz", target_frames, sample_rate);
+    log::info!("Rendering full track: {} frames at {} Hz", target_frames, sample_rate);
     let start_time = std::time::Instant::now();
 
     let mut remaining = target_frames;
@@ -306,7 +307,7 @@ pub fn render_full_wav(track_json: String, out_path: String) -> anyhow::Result<(
         .map_err(|e| anyhow::anyhow!("Failed to finalize WAV file: {}", e))?;
 
     let elapsed = start_time.elapsed().as_secs_f32();
-    println!("Total generation time: {:.2}s", elapsed);
+    log::info!("Total generation time: {:.2}s", elapsed);
 
     Ok(())
 }

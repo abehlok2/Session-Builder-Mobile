@@ -15,6 +15,8 @@ pub mod streaming_noise;
 pub mod voice_loader;
 pub mod voices;
 pub mod mobile_api;
+pub mod logging;
+
 
 use config::CONFIG;
 
