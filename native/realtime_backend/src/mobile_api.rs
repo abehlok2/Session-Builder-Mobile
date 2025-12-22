@@ -329,8 +329,88 @@ pub fn get_sample_rate() -> Option<u32> {
     guard.as_ref().map(|s| s.sample_rate)
 }
 
-// Generate simple waveform data for visualization (optional, if we want to add it later)
-pub fn generate_waveform_snippet(_duration_sec: f32) -> Vec<f32> {
-    // Placeholder for potential future visualization logic
-    vec![]
+/// Generate waveform data for visualization
+/// Returns amplitude values (0.0 to 1.0) sampled at regular intervals
+/// for the given duration in seconds
+pub fn generate_waveform_snippet(duration_sec: f32) -> Vec<f32> {
+    // Generate 100 samples per second for visualization
+    let samples_per_second = 100;
+    let total_samples = (duration_sec * samples_per_second as f32) as usize;
+
+    if total_samples == 0 {
+        return vec![];
+    }
+
+    let mut waveform = Vec::with_capacity(total_samples);
+
+    // Generate a representative waveform pattern
+    // Combines multiple frequencies to create an organic look
+    for i in 0..total_samples {
+        let t = i as f32 / samples_per_second as f32;
+
+        // Combine multiple sine waves at different frequencies
+        let wave1 = (t * 2.0 * std::f32::consts::PI * 0.5).sin() * 0.3;
+        let wave2 = (t * 2.0 * std::f32::consts::PI * 1.2).sin() * 0.2;
+        let wave3 = (t * 2.0 * std::f32::consts::PI * 2.8).sin() * 0.15;
+        let wave4 = (t * 2.0 * std::f32::consts::PI * 0.1).sin() * 0.25;
+
+        // Add some noise for organic feel
+        let noise = ((t * 17.3).sin() * (t * 31.7).cos()) * 0.1;
+
+        // Combine and normalize to 0.0-1.0 range
+        let combined = (wave1 + wave2 + wave3 + wave4 + noise).abs();
+        let normalized = (combined + 0.2).min(1.0); // Add baseline and clamp
+
+        waveform.push(normalized);
+    }
+
+    waveform
+}
+
+/// Generate waveform data from a track JSON configuration
+/// This creates waveform visualization based on the step structure
+pub fn generate_track_waveform(track_json: String, samples_per_second: u32) -> anyhow::Result<Vec<f32>> {
+    let track_data: crate::models::TrackData = serde_json::from_str(&track_json)
+        .map_err(|e| anyhow::anyhow!("Invalid track JSON: {}", e))?;
+
+    // Calculate total duration from all steps
+    let total_duration: f64 = track_data.steps.iter()
+        .map(|s| s.duration)
+        .sum();
+
+    let total_samples = (total_duration * samples_per_second as f64) as usize;
+
+    if total_samples == 0 {
+        return Ok(vec![]);
+    }
+
+    let mut waveform = Vec::with_capacity(total_samples);
+    let mut current_sample = 0usize;
+
+    for (step_idx, step) in track_data.steps.iter().enumerate() {
+        let step_samples = (step.duration * samples_per_second as f64) as usize;
+        let voice_count = step.voices.len().max(1) as f32;
+
+        for i in 0..step_samples {
+            let local_t = i as f32 / samples_per_second as f32;
+            let global_t = (current_sample + i) as f32 / samples_per_second as f32;
+
+            // Base amplitude varies by step (different presets = different patterns)
+            let step_factor = 0.4 + ((step_idx as f32 * 0.7).sin().abs() * 0.4);
+
+            // Create wave pattern based on voices
+            let wave = (local_t * 2.0 * std::f32::consts::PI * (1.0 + voice_count * 0.2)).sin();
+            let envelope = (local_t * 0.5).sin().abs() * 0.3 + 0.5;
+
+            // Add subtle variation
+            let variation = (global_t * 13.7).sin() * 0.1;
+
+            let amplitude = ((wave.abs() * envelope * step_factor) + variation).clamp(0.1, 1.0);
+            waveform.push(amplitude);
+        }
+
+        current_sample += step_samples;
+    }
+
+    Ok(waveform)
 }
