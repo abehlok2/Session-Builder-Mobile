@@ -9,6 +9,8 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ENGINE`, `EngineState`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `deref`, `initialize`
 
+/// Start an audio session with the given track JSON configuration.
+/// Optionally specify a start time in seconds to begin playback from that position.
 Future<void> startAudioSession({
   required String trackJson,
   double? startTime,
@@ -17,19 +19,25 @@ Future<void> startAudioSession({
   startTime: startTime,
 );
 
+/// Stop the currently active audio session.
 Future<void> stopAudioSession() =>
     RustLib.instance.api.crateMobileApiStopAudioSession();
 
+/// Pause the audio playback.
 Future<void> pauseAudio() => RustLib.instance.api.crateMobileApiPauseAudio();
 
+/// Resume the audio playback.
 Future<void> resumeAudio() => RustLib.instance.api.crateMobileApiResumeAudio();
 
+/// Set the master volume (0.0 to 1.0).
 Future<void> setVolume({required double volume}) =>
     RustLib.instance.api.crateMobileApiSetVolume(volume: volume);
 
+/// Update the current session with new track JSON configuration.
 Future<void> updateSession({required String trackJson}) =>
     RustLib.instance.api.crateMobileApiUpdateSession(trackJson: trackJson);
 
+/// Push audio clip chunk data for streaming.
 Future<void> pushClipChunk({
   required BigInt index,
   required List<double> samples,
@@ -40,7 +48,64 @@ Future<void> pushClipChunk({
   finished: finished,
 );
 
+/// Seek to a specific position in the audio stream (in seconds).
+/// Maps to Python's start_from function.
+Future<void> startFrom({required double position}) =>
+    RustLib.instance.api.crateMobileApiStartFrom(position: position);
+
+/// Enable or disable GPU acceleration for audio processing.
+/// Maps to Python's enable_gpu function.
+Future<void> enableGpu({required bool enable}) =>
+    RustLib.instance.api.crateMobileApiEnableGpu(enable: enable);
+
+/// Render up to 60 seconds of audio to a WAV file.
+/// Maps to Python's render_sample_wav function.
+Future<void> renderSampleWav({
+  required String trackJson,
+  required String outPath,
+}) => RustLib.instance.api.crateMobileApiRenderSampleWav(
+  trackJson: trackJson,
+  outPath: outPath,
+);
+
+/// Render the complete audio track to a WAV file.
+/// Maps to Python's render_full_wav function.
+Future<void> renderFullWav({
+  required String trackJson,
+  required String outPath,
+}) => RustLib.instance.api.crateMobileApiRenderFullWav(
+  trackJson: trackJson,
+  outPath: outPath,
+);
+
+/// Set the master output gain (volume).
+/// Alias for setVolume to match Python API naming.
+Future<void> setMasterGain({required double gain}) =>
+    RustLib.instance.api.crateMobileApiSetMasterGain(gain: gain);
+
+/// Check if audio is currently playing.
+Future<bool> isAudioPlaying() =>
+    RustLib.instance.api.crateMobileApiIsAudioPlaying();
+
+/// Get the current sample rate of the active session.
+/// Returns null if no session is active.
+Future<int?> getSampleRate() =>
+    RustLib.instance.api.crateMobileApiGetSampleRate();
+
+/// Generate waveform data for visualization.
+/// Returns amplitude values (0.0 to 1.0) sampled at regular intervals
+/// for the given duration in seconds.
 Future<Float32List> generateWaveformSnippet({required double durationSec}) =>
     RustLib.instance.api.crateMobileApiGenerateWaveformSnippet(
       durationSec: durationSec,
     );
+
+/// Generate waveform data from a track JSON configuration.
+/// This creates waveform visualization based on the step structure.
+Future<Float32List> generateTrackWaveform({
+  required String trackJson,
+  required int samplesPerSecond,
+}) => RustLib.instance.api.crateMobileApiGenerateTrackWaveform(
+  trackJson: trackJson,
+  samplesPerSecond: samplesPerSecond,
+);
