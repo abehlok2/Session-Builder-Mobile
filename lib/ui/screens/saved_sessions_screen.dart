@@ -5,6 +5,7 @@ import 'package:session_builder_mobile/logic/state/session_editor_provider.dart'
 import 'package:session_builder_mobile/logic/state/sessions_repository_provider.dart';
 import 'package:session_builder_mobile/ui/screens/session_screen.dart';
 import 'package:session_builder_mobile/ui/screens/step_list_screen.dart';
+import 'package:session_builder_mobile/data/session_storage.dart';
 
 class SavedSessionsScreen extends ConsumerStatefulWidget {
   const SavedSessionsScreen({super.key});
@@ -33,9 +34,9 @@ class _SavedSessionsScreenState extends ConsumerState<SavedSessionsScreen> {
   Future<void> _startSession(SessionModel session) async {
     ref.read(sessionEditorProvider.notifier).loadFromModel(session);
     await ref.read(playbackProvider.notifier).start(session.steps);
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const SessionScreen()),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const SessionScreen()));
   }
 
   Future<void> _deleteSession(SessionModel session) async {
@@ -79,7 +80,7 @@ class _SavedSessionsScreenState extends ConsumerState<SavedSessionsScreen> {
     if (_selectedIndex == null || sessionsValue is! AsyncData) return;
     final sessions = sessionsValue.value;
     final newIndex = _selectedIndex! + delta;
-    if (newIndex < 0 || newIndex >= sessions.length) return;
+    if (newIndex < 0 || newIndex >= (sessions?.length ?? 0)) return;
     await ref
         .read(sessionsRepositoryProvider.notifier)
         .reorderSession(_selectedIndex!, newIndex);
@@ -197,21 +198,20 @@ class _SavedSessionsScreenState extends ConsumerState<SavedSessionsScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
                       _buildActionButton("Move Up", () => _move(-1)),
-                      _buildActionButton(
-                        "Load",
-                        () {
-                          final sessionsValue = ref.read(
-                            sessionsRepositoryProvider,
+                      _buildActionButton("Load", () {
+                        final sessionsValue = ref.read(
+                          sessionsRepositoryProvider,
+                        );
+                        if (_selectedIndex != null &&
+                            sessionsValue is AsyncData &&
+                            (sessionsValue.value?.length ?? 0) >
+                                _selectedIndex!) {
+                          _loadSession(
+                            (sessionsValue.value ??
+                                const <SessionModel>[])[_selectedIndex!],
                           );
-                          if (_selectedIndex != null &&
-                              sessionsValue is AsyncData &&
-                              sessionsValue.value.length > _selectedIndex!) {
-                            _loadSession(
-                              sessionsValue.value[_selectedIndex!],
-                            );
-                          }
-                        },
-                      ),
+                        }
+                      }),
                     ],
                   ),
                   const SizedBox(height: 15),
@@ -219,42 +219,40 @@ class _SavedSessionsScreenState extends ConsumerState<SavedSessionsScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
                       _buildActionButton("Move Down", () => _move(1)),
-                      _buildActionButton(
-                        "Delete",
-                        () {
-                          final sessionsValue = ref.read(
-                            sessionsRepositoryProvider,
+                      _buildActionButton("Delete", () {
+                        final sessionsValue = ref.read(
+                          sessionsRepositoryProvider,
+                        );
+                        if (_selectedIndex != null &&
+                            sessionsValue is AsyncData &&
+                            (sessionsValue.value?.length ?? 0) >
+                                _selectedIndex!) {
+                          _deleteSession(
+                            (sessionsValue.value ??
+                                const <SessionModel>[])[_selectedIndex!],
                           );
-                          if (_selectedIndex != null &&
-                              sessionsValue is AsyncData &&
-                              sessionsValue.value.length > _selectedIndex!) {
-                            _deleteSession(
-                              sessionsValue.value[_selectedIndex!],
-                            );
-                          }
-                        },
-                      ),
+                        }
+                      }),
                     ],
                   ),
                   const SizedBox(height: 15),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      _buildActionButton(
-                        "Start",
-                        () {
-                          final sessionsValue = ref.read(
-                            sessionsRepositoryProvider,
+                      _buildActionButton("Start", () {
+                        final sessionsValue = ref.read(
+                          sessionsRepositoryProvider,
+                        );
+                        if (_selectedIndex != null &&
+                            sessionsValue is AsyncData &&
+                            (sessionsValue.value?.length ?? 0) >
+                                _selectedIndex!) {
+                          _startSession(
+                            (sessionsValue.value ??
+                                const <SessionModel>[])[_selectedIndex!],
                           );
-                          if (_selectedIndex != null &&
-                              sessionsValue is AsyncData &&
-                              sessionsValue.value.length > _selectedIndex!) {
-                            _startSession(
-                              sessionsValue.value[_selectedIndex!],
-                            );
-                          }
-                        },
-                      ),
+                        }
+                      }),
                     ],
                   ),
                 ],
