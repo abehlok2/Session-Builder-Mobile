@@ -240,13 +240,8 @@ fn run_audio_stream_android<C>(
         .set_format::<f32>()
         .set_channel_count::<Stereo>()
         .set_sample_rate(44100)
-<<<<<<< HEAD
         .set_frames_per_callback(ANDROID_BUFFER_FRAMES)
         .set_buffer_capacity_in_frames(ANDROID_BUFFER_FRAMES * 4)
-=======
-        .set_frames_per_buffer(ANDROID_BUFFER_FRAMES)
-        .set_buffer_capacity_in_frames(ANDROID_BUFFER_FRAMES * 8)
->>>>>>> 7019d9972a5bcc383f77d8ca974eaad45082eade
         .set_callback(callback)
         .open_stream()
         .expect("Failed to open Oboe stream");
