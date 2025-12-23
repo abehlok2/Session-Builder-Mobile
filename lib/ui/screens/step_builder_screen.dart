@@ -34,6 +34,31 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
 
   bool _isTestPlaying = false;
 
+  /// Updates the playing audio session with current volume settings.
+  /// This is called when volume sliders change during test playback.
+  Future<void> _updateTestPlaybackVolumes() async {
+    if (!_isTestPlaying) return;
+
+    final testStep = {
+      "binaural": _binauralPreset,
+      "binaural_volume": _binauralVolume,
+      "noise": _noisePreset,
+      "noise_volume": _noiseVolume,
+      "track": _backgroundTrack ?? "None",
+      "track_path": _backgroundTrackPath,
+      "track_volume": _backgroundVolume,
+      "track_extend": _backgroundExtend,
+      "duration": "30s",
+    };
+
+    try {
+      final trackJson = AudioHelpers.generateTrackJson(steps: [testStep]);
+      await updateSession(trackJson: trackJson);
+    } catch (e) {
+      debugPrint("Error updating test playback volumes: $e");
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -276,8 +301,10 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                             children: [
                               Slider(
                                 value: _binauralVolume,
-                                onChanged: (v) =>
-                                    setState(() => _binauralVolume = v),
+                                onChanged: (v) {
+                                  setState(() => _binauralVolume = v);
+                                  _updateTestPlaybackVolumes();
+                                },
                                 activeColor: Colors.white,
                                 inactiveColor: Colors.white24,
                               ),
@@ -315,8 +342,10 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                             children: [
                               Slider(
                                 value: _noiseVolume,
-                                onChanged: (v) =>
-                                    setState(() => _noiseVolume = v),
+                                onChanged: (v) {
+                                  setState(() => _noiseVolume = v);
+                                  _updateTestPlaybackVolumes();
+                                },
                                 activeColor: Colors.white,
                                 inactiveColor: Colors.white24,
                               ),
@@ -406,8 +435,10 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                                 ),
                               Slider(
                                 value: _backgroundVolume,
-                                onChanged: (v) =>
-                                    setState(() => _backgroundVolume = v),
+                                onChanged: (v) {
+                                  setState(() => _backgroundVolume = v);
+                                  _updateTestPlaybackVolumes();
+                                },
                                 activeColor: Colors.white,
                                 inactiveColor: Colors.white24,
                               ),

@@ -198,6 +198,13 @@ where
     }
 }
 
+/// Buffer size for Android audio output (in frames).
+/// Using 1024 frames at 44100Hz = ~23ms latency.
+/// This provides a good balance between latency and stability,
+/// preventing choppy/static audio on devices like Galaxy S21.
+#[cfg(target_os = "android")]
+const ANDROID_BUFFER_FRAMES: i32 = 1024;
+
 #[cfg(target_os = "android")]
 fn run_audio_stream_android<C>(
     scheduler: TrackScheduler,
@@ -215,18 +222,29 @@ fn run_audio_stream_android<C>(
         playback_state,
     };
 
+    // Use PerformanceMode::None instead of LowLatency for more stable playback.
+    // LowLatency can cause buffer underruns on some devices leading to choppy audio.
+    // Also set explicit buffer size to prevent underruns.
     let mut stream = AudioStreamBuilder::default()
-        .set_performance_mode(PerformanceMode::LowLatency)
+        .set_performance_mode(PerformanceMode::None)
         .set_sharing_mode(SharingMode::Shared)
         .set_format::<f32>()
         .set_channel_count::<Stereo>()
         .set_sample_rate(44100)
+        .set_frames_per_buffer(ANDROID_BUFFER_FRAMES)
+        .set_buffer_capacity_in_frames(ANDROID_BUFFER_FRAMES * 4)
         .set_callback(callback)
         .open_stream()
         .expect("Failed to open Oboe stream");
 
+    log::error!(
+        "REALTIME_BACKEND: Oboe stream opened. Buffer size: {} frames, capacity: {} frames",
+        stream.get_frames_per_burst(),
+        stream.get_buffer_capacity_in_frames()
+    );
+
     stream.start().expect("Failed to start Oboe stream");
-    
+
     log::error!("REALTIME_BACKEND: Oboe stream started successfully.");
 
     while stop_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err() {}

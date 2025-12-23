@@ -39,6 +39,16 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     }
   }
 
+  /// Stops playback and navigates back
+  Future<void> _stopAndGoBack() async {
+    // Stop playback before navigating
+    await ref.read(playbackProvider.notifier).stop();
+    await AudioSessionService.instance.deactivate();
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final editorState = ref.watch(sessionEditorProvider);
@@ -49,19 +59,25 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
         ? playbackState.totalDurationSeconds
         : editorState.totalSeconds;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: const Text("Session", style: TextStyle(color: Colors.white)),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        await _stopAndGoBack();
+      },
+      child: Scaffold(
         backgroundColor: Colors.black,
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.white),
+            onPressed: _stopAndGoBack,
+          ),
+          title: const Text("Session", style: TextStyle(color: Colors.white)),
+          backgroundColor: Colors.black,
+        ),
+        body: SafeArea(
+          child: Column(
+            children: [
             // --- Step List Layer ---
             Expanded(
               child: ListView.separated(
@@ -259,7 +275,8 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                 ],
               ),
             ),
-          ],
+            ],
+          ),
         ),
       ),
     );
