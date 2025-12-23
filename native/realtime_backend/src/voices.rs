@@ -671,12 +671,18 @@ pub struct SubliminalEncodeVoice {
     remaining_samples: usize,
 }
 
+/// Pre-allocated buffer size for noise voice scratch buffers.
+/// Based on typical audio callback buffer of 2048 frames * 2 channels.
+const NOISE_VOICE_SCRATCH_SIZE: usize = 4096;
+
 /// Voice wrapper for noise generation with swept notch filtering (static mode).
 pub struct NoiseSweptNotchVoice {
     generator: StreamingNoise,
     amp: f32,
     remaining_samples: usize,
     cached_peak: f32,
+    /// Pre-allocated scratch buffer to avoid allocations in the audio callback.
+    scratch: Vec<f32>,
 }
 
 /// Voice wrapper for noise generation with swept notch filtering (transition mode).
@@ -698,6 +704,8 @@ pub struct NoiseSweptNotchTransitionVoice {
     end_qs: Vec<f32>,
     duration_samples: usize,
     sample_idx: usize,
+    /// Pre-allocated scratch buffer to avoid allocations in the audio callback.
+    scratch: Vec<f32>,
 }
 
 impl SubliminalEncodeVoice {
@@ -1267,6 +1275,7 @@ impl NoiseSweptNotchVoice {
             amp,
             remaining_samples: total_samples,
             cached_peak,
+            scratch: vec![0.0; NOISE_VOICE_SCRATCH_SIZE],
         }
     }
 
@@ -1285,14 +1294,22 @@ impl Voice for NoiseSweptNotchVoice {
             return;
         }
 
-        // Generate noise into a temporary buffer
-        let mut scratch = vec![0.0f32; to_process * 2];
-        self.generator.generate(&mut scratch);
+        // Ensure scratch buffer is large enough (only grows, never shrinks to avoid allocations)
+        let required_size = to_process * 2;
+        if self.scratch.len() < required_size {
+            self.scratch.resize(required_size, 0.0);
+        }
+
+        // Clear only the portion we'll use
+        self.scratch[..required_size].fill(0.0);
+
+        // Generate noise into the pre-allocated scratch buffer
+        self.generator.generate(&mut self.scratch[..required_size]);
 
         // Mix into output with amplitude
         for i in 0..to_process {
-            output[i * 2] += scratch[i * 2] * self.amp;
-            output[i * 2 + 1] += scratch[i * 2 + 1] * self.amp;
+            output[i * 2] += self.scratch[i * 2] * self.amp;
+            output[i * 2 + 1] += self.scratch[i * 2 + 1] * self.amp;
         }
 
         self.remaining_samples = self.remaining_samples.saturating_sub(to_process);
@@ -1365,6 +1382,7 @@ impl NoiseSweptNotchTransitionVoice {
             end_qs,
             duration_samples: total_samples,
             sample_idx: 0,
+            scratch: vec![0.0; NOISE_VOICE_SCRATCH_SIZE],
         }
     }
 
@@ -1383,17 +1401,25 @@ impl Voice for NoiseSweptNotchTransitionVoice {
             return;
         }
 
-        // Generate noise into a temporary buffer
+        // Ensure scratch buffer is large enough (only grows, never shrinks to avoid allocations)
+        let required_size = to_process * 2;
+        if self.scratch.len() < required_size {
+            self.scratch.resize(required_size, 0.0);
+        }
+
+        // Clear only the portion we'll use
+        self.scratch[..required_size].fill(0.0);
+
+        // Generate noise into the pre-allocated scratch buffer
         // Note: For full transition support, the StreamingNoise generator would need
         // to be modified to interpolate parameters. For now, we generate using the
         // initial parameters which provides basic noise functionality.
-        let mut scratch = vec![0.0f32; to_process * 2];
-        self.generator.generate(&mut scratch);
+        self.generator.generate(&mut self.scratch[..required_size]);
 
         // Mix into output with amplitude
         for i in 0..to_process {
-            output[i * 2] += scratch[i * 2] * self.amp;
-            output[i * 2 + 1] += scratch[i * 2 + 1] * self.amp;
+            output[i * 2] += self.scratch[i * 2] * self.amp;
+            output[i * 2 + 1] += self.scratch[i * 2 + 1] * self.amp;
         }
 
         self.remaining_samples = self.remaining_samples.saturating_sub(to_process);
