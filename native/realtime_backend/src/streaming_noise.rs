@@ -9,13 +9,15 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 // --- Constants for Python-compat OLA mode ---
-const BLOCK_SIZE: usize = 4096;
-const HOP_SIZE: usize = BLOCK_SIZE / 2; // 2048, 50% overlap
+// Reduced from 4096 to 2048 to lower CPU load and latency on mobile devices.
+// This improves real-time performance while maintaining acceptable audio quality.
+const BLOCK_SIZE: usize = 2048;
+const HOP_SIZE: usize = BLOCK_SIZE / 2; // 1024, 50% overlap
 
 // --- Crossfade length for FFT noise regeneration ---
-// Increased from 2048 to 4096 to give bandpass filters more time to adapt
-// during buffer transitions, reducing transient clicking with narrow-band filtering.
-const CROSSFADE_SAMPLES: usize = 4096;
+// Reduced from 4096 to 2048 to match the smaller block size.
+// Still provides smooth transitions between buffers.
+const CROSSFADE_SAMPLES: usize = 2048;
 
 // --- Renormalization window for post-filter RMS tracking ---
 // Increased from 4096 to reduce frequency of gain recalculations and improve
@@ -29,9 +31,9 @@ const RENORM_HYSTERESIS_RATIO: f32 = 0.05;
 
 // --- Per-sample gain smoothing coefficient ---
 // This coefficient determines how quickly gain changes are applied per-sample.
-// A value of 0.9995 creates a smooth transition over ~2000 samples (~45ms at 44.1kHz)
-// to prevent clicking from abrupt gain changes.
-const GAIN_SMOOTHING_COEFF: f32 = 0.9995;
+// A value of 0.9998 creates a very smooth transition over ~5000 samples (~113ms at 44.1kHz)
+// to prevent clicking from abrupt gain changes. Higher values = smoother but slower response.
+const GAIN_SMOOTHING_COEFF: f32 = 0.9998;
 
 // --- Helper Functions ---
 
