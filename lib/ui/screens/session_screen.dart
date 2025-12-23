@@ -44,7 +44,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     final editorState = ref.watch(sessionEditorProvider);
     final playbackState = ref.watch(playbackProvider);
     final playbackNotifier = ref.read(playbackProvider.notifier);
-    playbackNotifier.ensureDurationFromSteps(editorState.steps);
+
     final totalDurationSeconds = playbackState.totalDurationSeconds > 0
         ? playbackState.totalDurationSeconds
         : editorState.totalSeconds;

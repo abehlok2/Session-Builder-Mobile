@@ -7,7 +7,10 @@ import 'package:session_builder_mobile/logic/state/session_editor_provider.dart'
 import 'package:session_builder_mobile/src/rust/mobile_api.dart';
 
 class StepBuilderScreen extends ConsumerStatefulWidget {
-  const StepBuilderScreen({super.key});
+  final Map<String, dynamic>? initialStep;
+  final int? editIndex;
+
+  const StepBuilderScreen({super.key, this.initialStep, this.editIndex});
 
   @override
   ConsumerState<StepBuilderScreen> createState() => _StepBuilderScreenState();
@@ -15,23 +18,50 @@ class StepBuilderScreen extends ConsumerStatefulWidget {
 
 class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
   // State variables matches wireframe
-  String _binauralPreset = "F10-B";
-  double _binauralVolume = 0.5;
+  late String _binauralPreset;
+  late double _binauralVolume;
 
-  String _noisePreset = "Brown Noise";
-  double _noiseVolume = 0.5;
+  late String _noisePreset;
+  late double _noiseVolume;
 
-  String? _backgroundTrack; // Null means nothing loaded
-  String? _backgroundTrackPath; // Full file path for audio processing
-  double _backgroundVolume = 0.5;
-  bool _backgroundExtend = false;
+  late String? _backgroundTrack; // Null means nothing loaded
+  late String? _backgroundTrackPath; // Full file path for audio processing
+  late double _backgroundVolume;
+  late bool _backgroundExtend;
   bool _isLoadingTrack = false;
 
-  final TextEditingController _durationController = TextEditingController(
-    text: "300",
-  );
+  late final TextEditingController _durationController;
 
   bool _isTestPlaying = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final step = widget.initialStep;
+    if (step != null) {
+      _binauralPreset = step['binaural'] ?? "F10-B";
+      _binauralVolume = (step['binaural_volume'] as num?)?.toDouble() ?? 0.5;
+      _noisePreset = step['noise'] ?? "Brown Noise";
+      _noiseVolume = (step['noise_volume'] as num?)?.toDouble() ?? 0.5;
+      _backgroundTrack = step['track'] == "None" ? null : step['track'];
+      _backgroundTrackPath = step['track_path'];
+      _backgroundVolume = (step['track_volume'] as num?)?.toDouble() ?? 0.5;
+      _backgroundExtend = step['track_extend'] ?? false;
+      _durationController = TextEditingController(
+        text: step['duration'].toString().replaceAll('s', ''),
+      );
+    } else {
+      _binauralPreset = "F10-B";
+      _binauralVolume = 0.5;
+      _noisePreset = "Brown Noise";
+      _noiseVolume = 0.5;
+      _backgroundTrack = null;
+      _backgroundTrackPath = null;
+      _backgroundVolume = 0.5;
+      _backgroundExtend = false;
+      _durationController = TextEditingController(text: "300");
+    }
+  }
 
   @override
   void dispose() {
@@ -122,9 +152,9 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
     } catch (e) {
       debugPrint("Error picking audio file: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error loading audio: $e")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Error loading audio: $e")));
       }
     } finally {
       if (mounted) {
@@ -166,16 +196,16 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
       } catch (e) {
         debugPrint("Error starting test playback: $e");
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Error starting test: $e")),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text("Error starting test: $e")));
         }
       }
     }
   }
 
-  void _addStep() {
-    final newStep = {
+  void _saveStep() {
+    final stepData = {
       "binaural": _binauralPreset,
       "binaural_volume": _binauralVolume,
       "noise": _noisePreset,
@@ -186,7 +216,14 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
       "track_extend": _backgroundExtend,
       "duration": "${int.tryParse(_durationController.text) ?? 300}s",
     };
-    ref.read(sessionEditorProvider.notifier).addStep(newStep);
+
+    if (widget.editIndex != null) {
+      ref
+          .read(sessionEditorProvider.notifier)
+          .updateStep(widget.editIndex!, stepData);
+    } else {
+      ref.read(sessionEditorProvider.notifier).addStep(stepData);
+    }
     Navigator.of(context).pop();
   }
 
@@ -202,9 +239,9 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
           icon: const Icon(Icons.arrow_back, color: Colors.white),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: const Text(
-          "Step Builder",
-          style: TextStyle(color: Colors.white),
+        title: Text(
+          widget.editIndex != null ? "Edit Step" : "Step Builder",
+          style: const TextStyle(color: Colors.white),
         ),
         backgroundColor: Colors.black,
       ),
@@ -306,7 +343,9 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                               SizedBox(
                                 width: double.infinity,
                                 child: OutlinedButton(
-                                  onPressed: _isLoadingTrack ? null : _loadBackground,
+                                  onPressed: _isLoadingTrack
+                                      ? null
+                                      : _loadBackground,
                                   style: _controlButtonStyle(),
                                   child: _isLoadingTrack
                                       ? const SizedBox(
@@ -457,7 +496,7 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                           width: 120,
                           height: 50,
                           child: OutlinedButton(
-                            onPressed: _addStep,
+                            onPressed: _saveStep,
                             style: OutlinedButton.styleFrom(
                               side: const BorderSide(color: Colors.white),
                               shape: RoundedRectangleBorder(
@@ -465,7 +504,11 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                               ),
                               foregroundColor: Colors.white,
                             ),
-                            child: const Text("Add Step"),
+                            child: Text(
+                              widget.editIndex != null
+                                  ? "Update Step"
+                                  : "Add Step",
+                            ),
                           ),
                         ),
                       ],
