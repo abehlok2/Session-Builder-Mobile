@@ -957,7 +957,16 @@ impl TrackScheduler {
         }
     }
 
-    fn render_step_audio(&mut self, voices: &mut [StepVoice], step: &StepData, out: &mut [f32]) {
+    /// Render audio for a step's voices into the output buffer.
+    /// Takes gain parameters directly to avoid cloning StepData in the audio callback.
+    fn render_step_audio(
+        &mut self,
+        voices: &mut [StepVoice],
+        normalization_level: f32,
+        binaural_volume: f32,
+        noise_volume: f32,
+        out: &mut [f32],
+    ) {
         let len = out.len();
         // Ensure buffers are large enough but never shrink them to avoid allocations.
         // This is critical for real-time audio performance.
@@ -1001,18 +1010,17 @@ impl TrackScheduler {
             }
         }
 
-        let norm_target = step.normalization_level;
         Self::apply_gain_stage(
             binaural_buf,
-            norm_target,
-            step.binaural_volume * crate::models::BINAURAL_MIX_SCALING,
+            normalization_level,
+            binaural_volume * crate::models::BINAURAL_MIX_SCALING,
             binaural_count > 0,
             binaural_peak,
         );
         Self::apply_gain_stage(
             noise_buf,
-            norm_target,
-            step.noise_volume * crate::models::NOISE_MIX_SCALING,
+            normalization_level,
+            noise_volume * crate::models::NOISE_MIX_SCALING,
             noise_count > 0,
             noise_peak,
         );
@@ -1190,14 +1198,22 @@ impl TrackScheduler {
             prev_buf[..len].fill(0.0);
             next_buf[..len].fill(0.0);
 
-            let step = self.track.steps[self.current_step].clone();
+            // Extract only the values needed for rendering (avoid cloning entire StepData)
+            let step = &self.track.steps[self.current_step];
+            let step_norm = step.normalization_level;
+            let step_binaural = step.binaural_volume;
+            let step_noise = step.noise_volume;
             let mut voices = std::mem::take(&mut self.active_voices);
-            self.render_step_audio(&mut voices, &step, &mut prev_buf[..len]);
+            self.render_step_audio(&mut voices, step_norm, step_binaural, step_noise, &mut prev_buf[..len]);
             self.active_voices = voices;
+
             let next_step_idx = (self.current_step + 1).min(self.track.steps.len() - 1);
-            let next_step = self.track.steps[next_step_idx].clone();
+            let next_step = &self.track.steps[next_step_idx];
+            let next_norm = next_step.normalization_level;
+            let next_binaural = next_step.binaural_volume;
+            let next_noise = next_step.noise_volume;
             let mut next_voices = std::mem::take(&mut self.next_voices);
-            self.render_step_audio(&mut next_voices, &next_step, &mut next_buf[..len]);
+            self.render_step_audio(&mut next_voices, next_norm, next_binaural, next_noise, &mut next_buf[..len]);
             self.next_voices = next_voices;
 
             for i in 0..frames {
@@ -1240,9 +1256,13 @@ impl TrackScheduler {
             self.crossfade_next = next_buf;
         } else {
             if !self.active_voices.is_empty() {
-                let step = self.track.steps[self.current_step].clone();
+                // Extract only the values needed for rendering (avoid cloning entire StepData)
+                let step = &self.track.steps[self.current_step];
+                let norm = step.normalization_level;
+                let binaural = step.binaural_volume;
+                let noise = step.noise_volume;
                 let mut voices = std::mem::take(&mut self.active_voices);
-                self.render_step_audio(&mut voices, &step, buffer);
+                self.render_step_audio(&mut voices, norm, binaural, noise, buffer);
                 self.active_voices = voices;
             }
 
