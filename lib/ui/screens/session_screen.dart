@@ -13,7 +13,7 @@ class SessionScreen extends ConsumerStatefulWidget {
   ConsumerState<SessionScreen> createState() => _SessionScreenState();
 }
 
-class _SessionScreenState extends State<SessionScreen> {
+class _SessionScreenState extends ConsumerState<SessionScreen> {
   Timer? _positionTimer;
 
   @override
@@ -34,8 +34,9 @@ class _SessionScreenState extends State<SessionScreen> {
   /// Start polling playback position
   void _startPositionPolling() {
     _positionTimer?.cancel();
-    _positionTimer =
-        Timer.periodic(const Duration(milliseconds: 250), (_) async {
+    _positionTimer = Timer.periodic(const Duration(milliseconds: 250), (
+      _,
+    ) async {
       await _updatePlaybackPosition();
     });
   }
@@ -135,8 +136,9 @@ class _SessionScreenState extends State<SessionScreen> {
                               Text(
                                 "Binaural: ${step['binaural']}",
                                 style: TextStyle(
-                                  color:
-                                      isActive ? Colors.white : Colors.white70,
+                                  color: isActive
+                                      ? Colors.white
+                                      : Colors.white70,
                                   fontSize: 14,
                                   fontWeight: isActive
                                       ? FontWeight.bold
@@ -191,11 +193,17 @@ class _SessionScreenState extends State<SessionScreen> {
                     children: [
                       Text(
                         _formatDuration(playbackState.positionSeconds),
-                        style: const TextStyle(color: Colors.white54, fontSize: 12),
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 12,
+                        ),
                       ),
                       Text(
                         _formatDuration(totalDurationSeconds),
-                        style: const TextStyle(color: Colors.white54, fontSize: 12),
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),
@@ -223,9 +231,9 @@ class _SessionScreenState extends State<SessionScreen> {
                         ),
                         onPressed: playbackState.activeStepIndex > 0
                             ? () => playbackNotifier.skipToStep(
-                                  playbackState.activeStepIndex - 1,
-                                  editorState.steps,
-                                )
+                                playbackState.activeStepIndex - 1,
+                                editorState.steps,
+                              )
                             : null,
                       ),
                       const SizedBox(width: 20),
@@ -245,17 +253,19 @@ class _SessionScreenState extends State<SessionScreen> {
                       IconButton(
                         icon: Icon(
                           Icons.skip_next,
-                          color: playbackState.activeStepIndex <
+                          color:
+                              playbackState.activeStepIndex <
                                   editorState.steps.length - 1
                               ? Colors.white
                               : Colors.white38,
                         ),
-                        onPressed: playbackState.activeStepIndex <
+                        onPressed:
+                            playbackState.activeStepIndex <
                                 editorState.steps.length - 1
                             ? () => playbackNotifier.skipToStep(
-                                  playbackState.activeStepIndex + 1,
-                                  editorState.steps,
-                                )
+                                playbackState.activeStepIndex + 1,
+                                editorState.steps,
+                              )
                             : null,
                       ),
                     ],
