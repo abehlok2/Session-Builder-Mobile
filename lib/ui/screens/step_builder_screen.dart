@@ -43,6 +43,53 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
     super.dispose();
   }
 
+  /// Build the current test step configuration
+  Map<String, dynamic> _buildCurrentTestStep() {
+    return {
+      "binaural": _binauralPreset,
+      "binaural_volume": _binauralVolume,
+      "noise": _noisePreset,
+      "noise_volume": _noiseVolume,
+      "track": _backgroundTrack ?? "None",
+      "track_path": _backgroundTrackPath,
+      "track_volume": _backgroundVolume,
+      "track_extend": _backgroundExtend,
+      "duration": "30s", // Short test duration
+    };
+  }
+
+  /// Update the audio session with current volume settings during test playback
+  Future<void> _updateTestVolumes() async {
+    if (!_isTestPlaying) return;
+
+    try {
+      final trackJson = AudioHelpers.generateTrackJson(
+        steps: [_buildCurrentTestStep()],
+      );
+      await updateSession(trackJson: trackJson);
+    } catch (e) {
+      debugPrint("Error updating test playback: $e");
+    }
+  }
+
+  /// Handle binaural volume change - update state and audio
+  void _onBinauralVolumeChanged(double v) {
+    setState(() => _binauralVolume = v);
+    _updateTestVolumes();
+  }
+
+  /// Handle noise volume change - update state and audio
+  void _onNoiseVolumeChanged(double v) {
+    setState(() => _noiseVolume = v);
+    _updateTestVolumes();
+  }
+
+  /// Handle background volume change - update state and audio
+  void _onBackgroundVolumeChanged(double v) {
+    setState(() => _backgroundVolume = v);
+    _updateTestVolumes();
+  }
+
   Future<void> _showPresetDialog(
     String title,
     List<String> items,
@@ -147,17 +194,7 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
       setState(() => _isTestPlaying = false);
     } else {
       // Build a test step from current settings
-      final testStep = {
-        "binaural": _binauralPreset,
-        "binaural_volume": _binauralVolume,
-        "noise": _noisePreset,
-        "noise_volume": _noiseVolume,
-        "track": _backgroundTrack ?? "None",
-        "track_path": _backgroundTrackPath,
-        "track_volume": _backgroundVolume,
-        "track_extend": _backgroundExtend,
-        "duration": "30s", // Short test duration
-      };
+      final testStep = _buildCurrentTestStep();
 
       try {
         final trackJson = AudioHelpers.generateTrackJson(steps: [testStep]);
@@ -239,8 +276,7 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                             children: [
                               Slider(
                                 value: _binauralVolume,
-                                onChanged: (v) =>
-                                    setState(() => _binauralVolume = v),
+                                onChanged: _onBinauralVolumeChanged,
                                 activeColor: Colors.white,
                                 inactiveColor: Colors.white24,
                               ),
@@ -278,8 +314,7 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                             children: [
                               Slider(
                                 value: _noiseVolume,
-                                onChanged: (v) =>
-                                    setState(() => _noiseVolume = v),
+                                onChanged: _onNoiseVolumeChanged,
                                 activeColor: Colors.white,
                                 inactiveColor: Colors.white24,
                               ),
@@ -367,8 +402,7 @@ class _StepBuilderScreenState extends ConsumerState<StepBuilderScreen> {
                                 ),
                               Slider(
                                 value: _backgroundVolume,
-                                onChanged: (v) =>
-                                    setState(() => _backgroundVolume = v),
+                                onChanged: _onBackgroundVolumeChanged,
                                 activeColor: Colors.white,
                                 inactiveColor: Colors.white24,
                               ),
