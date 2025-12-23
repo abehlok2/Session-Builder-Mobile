@@ -28,20 +28,22 @@ class _StepListScreenState extends ConsumerState<StepListScreen> {
   @override
   void initState() {
     super.initState();
-    final editor = ref.read(sessionEditorProvider.notifier);
-    if (widget.initialSteps != null ||
-        widget.sessionId != null ||
-        widget.sessionName != null) {
-      editor.state = SessionEditorState(
-        steps: widget.initialSteps != null
-            ? List<Map<String, dynamic>>.from(widget.initialSteps!)
-            : const [],
-        sessionId: widget.sessionId,
-        sessionName: widget.sessionName ?? 'Untitled Session',
-      );
-    } else {
-      editor.reset();
-    }
+    Future.microtask(() {
+      final editor = ref.read(sessionEditorProvider.notifier);
+      if (widget.initialSteps != null ||
+          widget.sessionId != null ||
+          widget.sessionName != null) {
+        editor.state = SessionEditorState(
+          steps: widget.initialSteps != null
+              ? List<Map<String, dynamic>>.from(widget.initialSteps!)
+              : const [],
+          sessionId: widget.sessionId,
+          sessionName: widget.sessionName ?? 'Untitled Session',
+        );
+      } else {
+        editor.reset();
+      }
+    });
   }
 
   Future<void> _addStep() async {
@@ -102,11 +104,9 @@ class _StepListScreenState extends ConsumerState<StepListScreen> {
 
     if (result != null && result.isNotEmpty) {
       try {
-        final saved =
-            await ref.read(sessionsRepositoryProvider.notifier).saveFromEditor(
-                  editorState: editorState,
-                  name: result,
-                );
+        final saved = await ref
+            .read(sessionsRepositoryProvider.notifier)
+            .saveFromEditor(editorState: editorState, name: result);
         ref
             .read(sessionEditorProvider.notifier)
             .setSessionMetadata(name: saved.name, id: saved.id);
@@ -117,9 +117,9 @@ class _StepListScreenState extends ConsumerState<StepListScreen> {
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Error saving session: $e")),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text("Error saving session: $e")));
         }
       }
     }
@@ -145,14 +145,17 @@ class _StepListScreenState extends ConsumerState<StepListScreen> {
     final editorState = ref.read(sessionEditorProvider);
     if (!editorState.hasSteps) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Add at least one step before exporting.")),
+        const SnackBar(
+          content: Text("Add at least one step before exporting."),
+        ),
       );
       return;
     }
 
     try {
       final session = SessionModel(
-        id: editorState.sessionId ??
+        id:
+            editorState.sessionId ??
             DateTime.now().millisecondsSinceEpoch.toString(),
         name: editorState.sessionName,
         steps: editorState.steps,
@@ -170,9 +173,9 @@ class _StepListScreenState extends ConsumerState<StepListScreen> {
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error exporting session: $e")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Error exporting session: $e")));
       }
     }
   }
@@ -187,8 +190,10 @@ class _StepListScreenState extends ConsumerState<StepListScreen> {
           icon: const Icon(Icons.arrow_back, color: Colors.white),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: Text(editorState.sessionName,
-            style: const TextStyle(color: Colors.white)),
+        title: Text(
+          editorState.sessionName,
+          style: const TextStyle(color: Colors.white),
+        ),
         backgroundColor: Colors.black,
         actions: [
           TextButton(
@@ -202,68 +207,101 @@ class _StepListScreenState extends ConsumerState<StepListScreen> {
           children: [
             // List of Steps
             Expanded(
-              child: ListView.separated(
+              child: ReorderableListView.builder(
                 padding: const EdgeInsets.all(16),
                 itemCount: editorState.steps.length,
-                separatorBuilder: (ctx, i) => const SizedBox(height: 10),
+                buildDefaultDragHandles: false,
+                onReorder: (oldIndex, newIndex) {
+                  ref
+                      .read(sessionEditorProvider.notifier)
+                      .reorderSteps(oldIndex, newIndex);
+                },
                 itemBuilder: (context, index) {
                   final step = editorState.steps[index];
                   final isSelected = editorState.selectedIndex == index;
-                  return GestureDetector(
-                    onTap: () => ref
-                        .read(sessionEditorProvider.notifier)
-                        .selectStep(index),
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: isSelected ? Colors.white10 : Colors.transparent,
-                        border: Border.all(
-                          color: isSelected ? Colors.white : Colors.white54,
-                          width: isSelected ? 2 : 1,
+                  return Padding(
+                    key: ValueKey(step),
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: GestureDetector(
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => StepBuilderScreen(
+                              initialStep: step,
+                              editIndex: index,
+                            ),
+                          ),
+                        );
+                      },
+                      onLongPress: () => ref
+                          .read(sessionEditorProvider.notifier)
+                          .selectStep(index),
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? Colors.white10
+                              : Colors.transparent,
+                          border: Border.all(
+                            color: isSelected ? Colors.white : Colors.white54,
+                            width: isSelected ? 2 : 1,
+                          ),
+                          borderRadius: BorderRadius.circular(15),
                         ),
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  "Binaural: ${step['binaural']}",
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 14,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    "Binaural: ${step['binaural']}",
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  "Noise: ${step['noise']}",
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 14,
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    "Noise: ${step['noise']}",
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  "Track: ${step['track']}",
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 14,
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    "Track: ${step['track']}",
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                    ),
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    "Duration: ${step['duration']}",
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
-                          Text(
-                            step['duration'],
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 14,
+                            // Drag Handle
+                            ReorderableDragStartListener(
+                              index: index,
+                              child: const Padding(
+                                padding: EdgeInsets.all(8.0),
+                                child: Icon(
+                                  Icons.drag_handle,
+                                  color: Colors.white54,
+                                ),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   );

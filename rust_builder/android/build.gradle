@@ -51,6 +51,6 @@ android {
 
 apply from: "../cargokit/gradle/plugin.gradle"
 cargokit {
-    manifestDir = "../../rust"
-    libname = "rust_lib_session_builder_mobile"
+    manifestDir = "../../native/realtime_backend"
+    libname = "realtime_backend"
 }

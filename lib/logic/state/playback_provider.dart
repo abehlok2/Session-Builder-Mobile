@@ -135,7 +135,7 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
         state = state.copyWith(
           isPlaying: !status.isPaused,
           positionSeconds: status.positionSeconds,
-          activeStepIndex: status.currentStep,
+          activeStepIndex: status.currentStep.toInt(),
           progress: progress,
           hasStarted: true,
         );

@@ -1,11 +1,11 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
+use crossbeam::channel::Receiver;
 #[cfg(target_os = "android")]
 use oboe::{
-    AudioOutputCallback, AudioOutputStreamSafe, AudioStream, AudioStreamBuilder,
-    DataCallbackResult, PerformanceMode, SharingMode, Mono, Stereo,
+    AudioOutputCallback, AudioOutputStreamSafe, AudioStream, AudioStreamBase, AudioStreamBuilder,
+    AudioStreamSafe, DataCallbackResult, Mono, PerformanceMode, SharingMode, Stereo,
 };
-use crossbeam::channel::Receiver;
 use ringbuf::traits::Consumer;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -117,7 +117,12 @@ pub fn run_audio_stream<C>(
 
     let stream = match sample_format {
         SampleFormat::F32 => device
-            .build_output_stream(&config, audio_callback, |err| eprintln!("stream error: {err}"), None)
+            .build_output_stream(
+                &config,
+                audio_callback,
+                |err| eprintln!("stream error: {err}"),
+                None,
+            )
             .expect("failed to build output stream"),
         _ => panic!("Unsupported sample format"),
     };
@@ -136,8 +141,6 @@ struct AndroidAudioCallback<C> {
     cmd_rx: C,
     playback_state: Option<PlaybackState>,
 }
-
-
 
 #[cfg(target_os = "android")]
 impl<C> AudioOutputCallback for AndroidAudioCallback<C>
@@ -159,7 +162,7 @@ where
         let float_slice = unsafe {
             std::slice::from_raw_parts_mut(
                 audio_data.as_mut_ptr() as *mut f32,
-                audio_data.len() * 2
+                audio_data.len() * 2,
             )
         };
         // ... rest of logic
@@ -181,7 +184,7 @@ where
                 );
             }
         }
-        
+
         self.scheduler.process_block(float_slice);
 
         if let Some(ref state) = self.playback_state {
@@ -191,7 +194,9 @@ where
             state
                 .current_step
                 .store(self.scheduler.current_step as u64, Ordering::Relaxed);
-            state.is_paused.store(self.scheduler.paused, Ordering::Relaxed);
+            state
+                .is_paused
+                .store(self.scheduler.paused, Ordering::Relaxed);
         }
 
         DataCallbackResult::Continue
@@ -226,12 +231,12 @@ fn run_audio_stream_android<C>(
     // LowLatency can cause buffer underruns on some devices leading to choppy audio.
     // Also set explicit buffer size to prevent underruns.
     let mut stream = AudioStreamBuilder::default()
-        .set_performance_mode(PerformanceMode::None)
+        .set_performance_mode(PerformanceMode::LowLatency)
         .set_sharing_mode(SharingMode::Shared)
         .set_format::<f32>()
         .set_channel_count::<Stereo>()
         .set_sample_rate(44100)
-        .set_frames_per_buffer(ANDROID_BUFFER_FRAMES)
+        .set_frames_per_callback(ANDROID_BUFFER_FRAMES)
         .set_buffer_capacity_in_frames(ANDROID_BUFFER_FRAMES * 4)
         .set_callback(callback)
         .open_stream()
@@ -240,14 +245,17 @@ fn run_audio_stream_android<C>(
     log::error!(
         "REALTIME_BACKEND: Oboe stream opened. Buffer size: {} frames, capacity: {} frames",
         stream.get_frames_per_burst(),
-        stream.get_buffer_capacity_in_frames()
+        stream.get_buffer_size_in_frames()
     );
 
     stream.start().expect("Failed to start Oboe stream");
 
     log::error!("REALTIME_BACKEND: Oboe stream started successfully.");
 
-    while stop_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err() {}
+    while stop_rx
+        .recv_timeout(std::time::Duration::from_millis(100))
+        .is_err()
+    {}
 }
 
 // The actual stop logic is handled via the channel in `run_audio_stream`.

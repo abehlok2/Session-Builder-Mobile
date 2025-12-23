@@ -1046,6 +1046,13 @@ impl TrackScheduler {
     }
 
     pub fn process_block(&mut self, buffer: &mut [f32]) {
+        static mut SCHED_CALL_COUNT: usize = 0;
+        unsafe {
+            SCHED_CALL_COUNT += 1;
+            if SCHED_CALL_COUNT % 10 == 0 {
+                log::error!("Scheduler: process_block called. Buffer len: {}, Step: {}", buffer.len(), self.current_step);
+            }
+        }
         let frame_count = buffer.len() / 2;
         buffer.fill(0.0);
 

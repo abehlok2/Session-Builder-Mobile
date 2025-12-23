@@ -42,8 +42,8 @@ pub fn init_app() {
 }
 
 pub fn start_audio_session(track_json: String, start_time: Option<f64>) -> anyhow::Result<()> {
-    log::info!("start_audio_session called");
-    log::info!("track_json len: {}", track_json.len());
+    log::error!("REALTIME_BACKEND: start_audio_session called");
+    log::error!("REALTIME_BACKEND: track_json len: {}", track_json.len());
 
     // Stop existing session
     stop_audio_session();

@@ -17,6 +17,31 @@ pub mod voices;
 pub mod mobile_api;
 pub mod logging;
 
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn JNI_OnLoad(vm: jni::sys::JavaVM, _res: *mut std::ffi::c_void) -> jni::sys::jint {
+    use std::ffi::c_void;
+
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Trace)
+            .with_tag("SessionBuilder"),
+    );
+    // println! works on some Android setups
+    println!("SessionBuilder: JNI_OnLoad executed (println)");
+    log::error!("SessionBuilder: JNI_OnLoad executed (log::error)");
+
+    // Initialize ndk_context with the VM
+    unsafe {
+        // We cast the raw VM pointer to what ndk_context expects (*mut c_void)
+        ndk_context::initialize_android_context(vm as *mut c_void, std::ptr::null_mut());
+    }
+    
+    log::info!("SessionBuilder: ndk_context initialized!");
+
+    jni::sys::JNI_VERSION_1_6
+}
+
 
 use config::CONFIG;
 
