@@ -1,11 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:session_builder_mobile/logic/audio_helpers.dart';
-import 'package:session_builder_mobile/services/audio_session_service.dart';
-import 'package:session_builder_mobile/src/rust/mobile_api.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/logic/state/playback_provider.dart';
 import 'package:session_builder_mobile/logic/state/session_editor_provider.dart';
+import 'package:session_builder_mobile/services/audio_session_service.dart';
+import 'package:session_builder_mobile/src/rust/mobile_api.dart';
 
 class SessionScreen extends ConsumerStatefulWidget {
   const SessionScreen({super.key});
@@ -15,51 +14,29 @@ class SessionScreen extends ConsumerStatefulWidget {
 }
 
 class _SessionScreenState extends State<SessionScreen> {
-  int _activeStepIndex = 0;
-  bool _isPlaying = false;
-  double _progressValue = 0.0; // 0.0 to 1.0
-  double _volumeValue = 0.5;
-  bool _hasStarted = false;
-  double _currentPositionSeconds = 0.0;
-  late double _totalDurationSeconds;
   Timer? _positionTimer;
-  bool _isSeeking = false;
 
   @override
   void initState() {
     super.initState();
-    _totalDurationSeconds = _calculateTotalDuration();
-    // Auto-start session
-    _startSessionPlayback();
+    _startPositionPolling();
   }
 
   @override
   void dispose() {
     _positionTimer?.cancel();
-    stopAudioSession();
+    ref.read(playbackProvider.notifier).stop();
     // Deactivate audio session when leaving playback screen
     AudioSessionService.instance.deactivate();
     super.dispose();
   }
 
-  /// Calculate total session duration from all steps
-  double _calculateTotalDuration() {
-    double total = 0.0;
-    for (final step in widget.steps) {
-      final durationStr = step['duration'].toString().replaceAll('s', '');
-      final duration = double.tryParse(durationStr) ?? 0.0;
-      total += duration;
-    }
-    return total;
-  }
-
   /// Start polling playback position
   void _startPositionPolling() {
     _positionTimer?.cancel();
-    _positionTimer = Timer.periodic(const Duration(milliseconds: 250), (_) async {
-      if (!_isSeeking) {
-        await _updatePlaybackPosition();
-      }
+    _positionTimer =
+        Timer.periodic(const Duration(milliseconds: 250), (_) async {
+      await _updatePlaybackPosition();
     });
   }
 
@@ -71,20 +48,21 @@ class _SessionScreenState extends State<SessionScreen> {
 
   /// Update UI with current playback position from Rust backend
   Future<void> _updatePlaybackPosition() async {
+    final playbackNotifier = ref.read(playbackProvider.notifier);
+    final stepsLength = ref.read(sessionEditorProvider).steps.length;
     try {
       final position = await getPlaybackPosition();
       final currentStep = await getCurrentStep();
 
       if (position != null && mounted) {
-        setState(() {
-          _currentPositionSeconds = position;
-          if (_totalDurationSeconds > 0) {
-            _progressValue = (position / _totalDurationSeconds).clamp(0.0, 1.0);
-          }
-          if (currentStep != null) {
-            _activeStepIndex = currentStep.toInt().clamp(0, widget.steps.length - 1);
-          }
-        });
+        final activeIndex = currentStep?.toInt();
+        final clampedIndex = activeIndex != null && stepsLength > 0
+            ? activeIndex.clamp(0, stepsLength - 1).toInt()
+            : activeIndex;
+        playbackNotifier.syncPlaybackPosition(
+          positionSeconds: position,
+          activeStepIndex: clampedIndex,
+        );
       }
     } catch (e) {
       debugPrint("Error updating playback position: $e");
@@ -105,118 +83,15 @@ class _SessionScreenState extends State<SessionScreen> {
     }
   }
 
-  /// Handle slider seek
-  Future<void> _handleSeek(double value) async {
-    final seekPosition = value * _totalDurationSeconds;
-    try {
-      await startFrom(position: seekPosition);
-      setState(() {
-        _currentPositionSeconds = seekPosition;
-        _progressValue = value;
-        // Update active step based on seek position
-        _activeStepIndex = _getStepIndexForPosition(seekPosition);
-      });
-    } catch (e) {
-      debugPrint("Error seeking: $e");
-    }
-  }
-
-  /// Get step index for a given position in seconds
-  int _getStepIndexForPosition(double positionSeconds) {
-    double accumulated = 0.0;
-    for (int i = 0; i < widget.steps.length; i++) {
-      final durationStr = widget.steps[i]['duration'].toString().replaceAll('s', '');
-      final duration = double.tryParse(durationStr) ?? 0.0;
-      accumulated += duration;
-      if (positionSeconds < accumulated) {
-        return i;
-      }
-    }
-    return widget.steps.length - 1;
-  }
-
-  Future<void> _startSessionPlayback() async {
-    try {
-      // Activate audio session for background playback
-      await AudioSessionService.instance.activate();
-
-      final trackJson = AudioHelpers.generateTrackJson(steps: widget.steps);
-      await startAudioSession(trackJson: trackJson, startTime: 0.0);
-      setState(() {
-        _isPlaying = true;
-        _hasStarted = true;
-      });
-      _startPositionPolling();
-    } catch (e) {
-      debugPrint("Error starting session: $e");
-    }
-  }
-
-  Future<void> _togglePlayPause() async {
-    try {
-      if (_isPlaying) {
-        await pauseAudio();
-        _stopPositionPolling();
-        setState(() => _isPlaying = false);
-      } else {
-        if (!_hasStarted) {
-          await _startSessionPlayback();
-        } else {
-          await resumeAudio();
-          _startPositionPolling();
-          setState(() => _isPlaying = true);
-        }
-      }
-    } catch (e) {
-      debugPrint("Error toggling playback: $e");
-    }
-  }
-
-  /// Calculate the start time in seconds for a given step index
-  double _getStepStartTime(int stepIndex) {
-    double startTime = 0.0;
-    for (int i = 0; i < stepIndex && i < widget.steps.length; i++) {
-      final durationStr =
-          widget.steps[i]['duration'].toString().replaceAll('s', '');
-      final duration = double.tryParse(durationStr) ?? 0.0;
-      startTime += duration;
-    }
-    return startTime;
-  }
-
-  Future<void> _skipToPreviousStep() async {
-    if (_activeStepIndex > 0) {
-      final newIndex = _activeStepIndex - 1;
-      final startTime = _getStepStartTime(newIndex);
-
-      try {
-        startFrom(position: startTime);
-        setState(() => _activeStepIndex = newIndex);
-      } catch (e) {
-        debugPrint("Error skipping to previous step: $e");
-      }
-    }
-  }
-
-  Future<void> _skipToNextStep() async {
-    if (_activeStepIndex < widget.steps.length - 1) {
-      final newIndex = _activeStepIndex + 1;
-      final startTime = _getStepStartTime(newIndex);
-
-      try {
-        startFrom(position: startTime);
-        setState(() => _activeStepIndex = newIndex);
-      } catch (e) {
-        debugPrint("Error skipping to next step: $e");
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final editorState = ref.watch(sessionEditorProvider);
     final playbackState = ref.watch(playbackProvider);
     final playbackNotifier = ref.read(playbackProvider.notifier);
+    playbackNotifier.ensureDurationFromSteps(editorState.steps);
+    final totalDurationSeconds = playbackState.totalDurationSeconds > 0
+        ? playbackState.totalDurationSeconds
+        : editorState.totalSeconds;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -315,25 +190,20 @@ class _SessionScreenState extends State<SessionScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        _formatDuration(_currentPositionSeconds),
+                        _formatDuration(playbackState.positionSeconds),
                         style: const TextStyle(color: Colors.white54, fontSize: 12),
                       ),
                       Text(
-                        _formatDuration(_totalDurationSeconds),
+                        _formatDuration(totalDurationSeconds),
                         style: const TextStyle(color: Colors.white54, fontSize: 12),
                       ),
                     ],
                   ),
                   Slider(
-                    value: _progressValue,
-                    onChangeStart: (_) {
-                      _isSeeking = true;
-                    },
-                    onChanged: (v) => setState(() => _progressValue = v),
-                    onChangeEnd: (v) async {
-                      await _handleSeek(v);
-                      _isSeeking = false;
-                    },
+                    value: playbackState.progress,
+                    onChanged: (v) => playbackNotifier.setProgress(v),
+                    onChangeEnd: (v) async =>
+                        playbackNotifier.seekToProgress(v, editorState.steps),
                     activeColor: Colors.white,
                     inactiveColor: Colors.white24,
                   ),
@@ -367,7 +237,9 @@ class _SessionScreenState extends State<SessionScreen> {
                               : Icons.play_arrow,
                           color: Colors.white,
                         ),
-                        onPressed: playbackNotifier.togglePlayPause,
+                        onPressed: () => playbackNotifier.togglePlayPause(
+                          steps: editorState.steps,
+                        ),
                       ),
                       const SizedBox(width: 20),
                       IconButton(
