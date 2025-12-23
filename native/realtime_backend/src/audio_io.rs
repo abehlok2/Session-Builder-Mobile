@@ -199,11 +199,13 @@ where
 }
 
 /// Buffer size for Android audio output (in frames).
-/// Using 1024 frames at 44100Hz = ~23ms latency.
-/// This provides a good balance between latency and stability,
+/// Using 2048 frames at 44100Hz = ~46ms latency.
+/// This provides a more stable buffer for continuous playback,
 /// preventing choppy/static audio on devices like Galaxy S21.
+/// The larger buffer helps compensate for CPU scheduling variability
+/// on mobile devices which can cause buffer underruns.
 #[cfg(target_os = "android")]
-const ANDROID_BUFFER_FRAMES: i32 = 1024;
+const ANDROID_BUFFER_FRAMES: i32 = 2048;
 
 #[cfg(target_os = "android")]
 fn run_audio_stream_android<C>(
@@ -225,6 +227,8 @@ fn run_audio_stream_android<C>(
     // Use PerformanceMode::None instead of LowLatency for more stable playback.
     // LowLatency can cause buffer underruns on some devices leading to choppy audio.
     // Also set explicit buffer size to prevent underruns.
+    // Using 8x buffer capacity (vs 4x) provides more headroom for CPU scheduling
+    // variability on mobile devices, reducing stuttering during background tasks.
     let mut stream = AudioStreamBuilder::default()
         .set_performance_mode(PerformanceMode::None)
         .set_sharing_mode(SharingMode::Shared)
@@ -232,7 +236,7 @@ fn run_audio_stream_android<C>(
         .set_channel_count::<Stereo>()
         .set_sample_rate(44100)
         .set_frames_per_buffer(ANDROID_BUFFER_FRAMES)
-        .set_buffer_capacity_in_frames(ANDROID_BUFFER_FRAMES * 4)
+        .set_buffer_capacity_in_frames(ANDROID_BUFFER_FRAMES * 8)
         .set_callback(callback)
         .open_stream()
         .expect("Failed to open Oboe stream");
