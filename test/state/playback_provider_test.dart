@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/logic/state/playback_provider.dart';
+import 'package:session_builder_mobile/src/rust/mobile_api.dart';
 
 class FakeAudioController implements AudioController {
   bool started = false;
@@ -37,21 +38,24 @@ class FakeAudioController implements AudioController {
   Future<void> stop() async {
     started = false;
   }
+
+  @override
+  Future<PlaybackStatus?> getStatus() async {
+    return null;
+  }
 }
 
 void main() {
   test('playback start/toggle/volume updates state', () async {
     final fakeController = FakeAudioController();
     final container = ProviderContainer(
-      overrides: [
-        audioControllerProvider.overrideWithValue(fakeController),
-      ],
+      overrides: [audioControllerProvider.overrideWithValue(fakeController)],
     );
     addTearDown(container.dispose);
 
     final notifier = container.read(playbackProvider.notifier);
     await notifier.start([
-      {'duration': '5s', 'binaural': 'A', 'noise': 'B', 'track': 'None'}
+      {'duration': '5s', 'binaural': 'A', 'noise': 'B', 'track': 'None'},
     ]);
 
     var state = container.read(playbackProvider);
@@ -69,7 +73,7 @@ void main() {
     expect(fakeController.lastVolume, 0.9);
 
     await notifier.skipToStep(0, [
-      {'duration': '5s', 'binaural': 'A', 'noise': 'B', 'track': 'None'}
+      {'duration': '5s', 'binaural': 'A', 'noise': 'B', 'track': 'None'},
     ]);
     expect(fakeController.lastStartPosition, 0);
   });

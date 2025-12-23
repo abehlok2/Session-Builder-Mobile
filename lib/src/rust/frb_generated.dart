@@ -66,22 +66,43 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => -1918914929;
+  int get rustContentHash => -190619437;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
-        stem: 'rust_lib_session_builder_mobile',
+        stem: 'realtime_backend',
         ioDirectory: 'native/realtime_backend/target/release/',
         webPrefix: 'pkg/',
       );
 }
 
 abstract class RustLibApi extends BaseApi {
+  Future<void> crateMobileApiEnableGpu({required bool enable});
+
+  Future<Float32List> crateMobileApiGenerateTrackWaveform({
+    required String trackJson,
+    required int samplesPerSecond,
+  });
+
   Future<Float32List> crateMobileApiGenerateWaveformSnippet({
     required double durationSec,
   });
 
+  Future<BigInt?> crateMobileApiGetCurrentStep();
+
+  Future<BigInt?> crateMobileApiGetElapsedSamples();
+
+  Future<bool?> crateMobileApiGetIsPaused();
+
+  Future<double?> crateMobileApiGetPlaybackPosition();
+
+  Future<PlaybackStatus?> crateMobileApiGetPlaybackStatus();
+
+  Future<int?> crateMobileApiGetSampleRate();
+
   Future<void> crateMobileApiInitApp();
+
+  Future<bool> crateMobileApiIsAudioPlaying();
 
   Future<void> crateMobileApiPauseAudio();
 
@@ -91,7 +112,19 @@ abstract class RustLibApi extends BaseApi {
     required bool finished,
   });
 
+  Future<void> crateMobileApiRenderFullWav({
+    required String trackJson,
+    required String outPath,
+  });
+
+  Future<void> crateMobileApiRenderSampleWav({
+    required String trackJson,
+    required String outPath,
+  });
+
   Future<void> crateMobileApiResumeAudio();
+
+  Future<void> crateMobileApiSetMasterGain({required double gain});
 
   Future<void> crateMobileApiSetVolume({required double volume});
 
@@ -100,34 +133,11 @@ abstract class RustLibApi extends BaseApi {
     double? startTime,
   });
 
+  Future<void> crateMobileApiStartFrom({required double position});
+
   Future<void> crateMobileApiStopAudioSession();
 
   Future<void> crateMobileApiUpdateSession({required String trackJson});
-
-  Future<void> crateMobileApiStartFrom({required double position});
-
-  Future<void> crateMobileApiEnableGpu({required bool enable});
-
-  Future<void> crateMobileApiRenderSampleWav({
-    required String trackJson,
-    required String outPath,
-  });
-
-  Future<void> crateMobileApiRenderFullWav({
-    required String trackJson,
-    required String outPath,
-  });
-
-  Future<void> crateMobileApiSetMasterGain({required double gain});
-
-  Future<bool> crateMobileApiIsAudioPlaying();
-
-  Future<int?> crateMobileApiGetSampleRate();
-
-  Future<Float32List> crateMobileApiGenerateTrackWaveform({
-    required String trackJson,
-    required int samplesPerSecond,
-  });
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -137,6 +147,69 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required super.generalizedFrbRustBinding,
     required super.portManager,
   });
+
+  @override
+  Future<void> crateMobileApiEnableGpu({required bool enable}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_bool(enable, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 1,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiEnableGpuConstMeta,
+        argValues: [enable],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiEnableGpuConstMeta =>
+      const TaskConstMeta(debugName: "enable_gpu", argNames: ["enable"]);
+
+  @override
+  Future<Float32List> crateMobileApiGenerateTrackWaveform({
+    required String trackJson,
+    required int samplesPerSecond,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(trackJson, serializer);
+          sse_encode_u_32(samplesPerSecond, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 2,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_f_32_strict,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateMobileApiGenerateTrackWaveformConstMeta,
+        argValues: [trackJson, samplesPerSecond],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiGenerateTrackWaveformConstMeta =>
+      const TaskConstMeta(
+        debugName: "generate_track_waveform",
+        argNames: ["trackJson", "samplesPerSecond"],
+      );
 
   @override
   Future<Float32List> crateMobileApiGenerateWaveformSnippet({
@@ -150,7 +223,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 1,
+            funcId: 3,
             port: port_,
           );
         },
@@ -172,6 +245,168 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<BigInt?> crateMobileApiGetCurrentStep() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_u_64,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiGetCurrentStepConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiGetCurrentStepConstMeta =>
+      const TaskConstMeta(debugName: "get_current_step", argNames: []);
+
+  @override
+  Future<BigInt?> crateMobileApiGetElapsedSamples() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_u_64,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiGetElapsedSamplesConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiGetElapsedSamplesConstMeta =>
+      const TaskConstMeta(debugName: "get_elapsed_samples", argNames: []);
+
+  @override
+  Future<bool?> crateMobileApiGetIsPaused() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 6,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_bool,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiGetIsPausedConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiGetIsPausedConstMeta =>
+      const TaskConstMeta(debugName: "get_is_paused", argNames: []);
+
+  @override
+  Future<double?> crateMobileApiGetPlaybackPosition() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_f_64,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiGetPlaybackPositionConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiGetPlaybackPositionConstMeta =>
+      const TaskConstMeta(debugName: "get_playback_position", argNames: []);
+
+  @override
+  Future<PlaybackStatus?> crateMobileApiGetPlaybackStatus() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_playback_status,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiGetPlaybackStatusConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiGetPlaybackStatusConstMeta =>
+      const TaskConstMeta(debugName: "get_playback_status", argNames: []);
+
+  @override
+  Future<int?> crateMobileApiGetSampleRate() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 9,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_u_32,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiGetSampleRateConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiGetSampleRateConstMeta =>
+      const TaskConstMeta(debugName: "get_sample_rate", argNames: []);
+
+  @override
   Future<void> crateMobileApiInitApp() {
     return handler.executeNormal(
       NormalTask(
@@ -180,7 +415,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 10,
             port: port_,
           );
         },
@@ -199,6 +434,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
   @override
+  Future<bool> crateMobileApiIsAudioPlaying() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 11,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiIsAudioPlayingConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiIsAudioPlayingConstMeta =>
+      const TaskConstMeta(debugName: "is_audio_playing", argNames: []);
+
+  @override
   Future<void> crateMobileApiPauseAudio() {
     return handler.executeNormal(
       NormalTask(
@@ -207,7 +469,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 12,
             port: port_,
           );
         },
@@ -241,7 +503,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 13,
             port: port_,
           );
         },
@@ -263,6 +525,76 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateMobileApiRenderFullWav({
+    required String trackJson,
+    required String outPath,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(trackJson, serializer);
+          sse_encode_String(outPath, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 14,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateMobileApiRenderFullWavConstMeta,
+        argValues: [trackJson, outPath],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiRenderFullWavConstMeta =>
+      const TaskConstMeta(
+        debugName: "render_full_wav",
+        argNames: ["trackJson", "outPath"],
+      );
+
+  @override
+  Future<void> crateMobileApiRenderSampleWav({
+    required String trackJson,
+    required String outPath,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(trackJson, serializer);
+          sse_encode_String(outPath, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateMobileApiRenderSampleWavConstMeta,
+        argValues: [trackJson, outPath],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiRenderSampleWavConstMeta =>
+      const TaskConstMeta(
+        debugName: "render_sample_wav",
+        argNames: ["trackJson", "outPath"],
+      );
+
+  @override
   Future<void> crateMobileApiResumeAudio() {
     return handler.executeNormal(
       NormalTask(
@@ -271,7 +603,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 16,
             port: port_,
           );
         },
@@ -290,6 +622,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "resume_audio", argNames: []);
 
   @override
+  Future<void> crateMobileApiSetMasterGain({required double gain}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_f_32(gain, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 17,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiSetMasterGainConstMeta,
+        argValues: [gain],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiSetMasterGainConstMeta =>
+      const TaskConstMeta(debugName: "set_master_gain", argNames: ["gain"]);
+
+  @override
   Future<void> crateMobileApiSetVolume({required double volume}) {
     return handler.executeNormal(
       NormalTask(
@@ -299,7 +659,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 18,
             port: port_,
           );
         },
@@ -331,7 +691,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 19,
             port: port_,
           );
         },
@@ -353,6 +713,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateMobileApiStartFrom({required double position}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_f_64(position, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 20,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateMobileApiStartFromConstMeta,
+        argValues: [position],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateMobileApiStartFromConstMeta =>
+      const TaskConstMeta(debugName: "start_from", argNames: ["position"]);
+
+  @override
   Future<void> crateMobileApiStopAudioSession() {
     return handler.executeNormal(
       NormalTask(
@@ -361,7 +749,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 21,
             port: port_,
           );
         },
@@ -389,7 +777,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 22,
             port: port_,
           );
         },
@@ -406,249 +794,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateMobileApiUpdateSessionConstMeta =>
       const TaskConstMeta(debugName: "update_session", argNames: ["trackJson"]);
-
-  @override
-  Future<void> crateMobileApiStartFrom({required double position}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_f_64(position, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 10,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: null,
-        ),
-        constMeta: kCrateMobileApiStartFromConstMeta,
-        argValues: [position],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateMobileApiStartFromConstMeta =>
-      const TaskConstMeta(debugName: "start_from", argNames: ["position"]);
-
-  @override
-  Future<void> crateMobileApiEnableGpu({required bool enable}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_bool(enable, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 11,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: null,
-        ),
-        constMeta: kCrateMobileApiEnableGpuConstMeta,
-        argValues: [enable],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateMobileApiEnableGpuConstMeta =>
-      const TaskConstMeta(debugName: "enable_gpu", argNames: ["enable"]);
-
-  @override
-  Future<void> crateMobileApiRenderSampleWav({
-    required String trackJson,
-    required String outPath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(trackJson, serializer);
-          sse_encode_String(outPath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 12,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateMobileApiRenderSampleWavConstMeta,
-        argValues: [trackJson, outPath],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateMobileApiRenderSampleWavConstMeta =>
-      const TaskConstMeta(
-        debugName: "render_sample_wav",
-        argNames: ["trackJson", "outPath"],
-      );
-
-  @override
-  Future<void> crateMobileApiRenderFullWav({
-    required String trackJson,
-    required String outPath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(trackJson, serializer);
-          sse_encode_String(outPath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 13,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateMobileApiRenderFullWavConstMeta,
-        argValues: [trackJson, outPath],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateMobileApiRenderFullWavConstMeta =>
-      const TaskConstMeta(
-        debugName: "render_full_wav",
-        argNames: ["trackJson", "outPath"],
-      );
-
-  @override
-  Future<void> crateMobileApiSetMasterGain({required double gain}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_f_32(gain, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 14,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: null,
-        ),
-        constMeta: kCrateMobileApiSetMasterGainConstMeta,
-        argValues: [gain],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateMobileApiSetMasterGainConstMeta =>
-      const TaskConstMeta(debugName: "set_master_gain", argNames: ["gain"]);
-
-  @override
-  Future<bool> crateMobileApiIsAudioPlaying() {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 15,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_bool,
-          decodeErrorData: null,
-        ),
-        constMeta: kCrateMobileApiIsAudioPlayingConstMeta,
-        argValues: [],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateMobileApiIsAudioPlayingConstMeta =>
-      const TaskConstMeta(debugName: "is_audio_playing", argNames: []);
-
-  @override
-  Future<int?> crateMobileApiGetSampleRate() {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 16,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_opt_box_autoadd_u_32,
-          decodeErrorData: null,
-        ),
-        constMeta: kCrateMobileApiGetSampleRateConstMeta,
-        argValues: [],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateMobileApiGetSampleRateConstMeta =>
-      const TaskConstMeta(debugName: "get_sample_rate", argNames: []);
-
-  @override
-  Future<Float32List> crateMobileApiGenerateTrackWaveform({
-    required String trackJson,
-    required int samplesPerSecond,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(trackJson, serializer);
-          sse_encode_u_32(samplesPerSecond, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 17,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_list_prim_f_32_strict,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-        constMeta: kCrateMobileApiGenerateTrackWaveformConstMeta,
-        argValues: [trackJson, samplesPerSecond],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateMobileApiGenerateTrackWaveformConstMeta =>
-      const TaskConstMeta(
-        debugName: "generate_track_waveform",
-        argNames: ["trackJson", "samplesPerSecond"],
-      );
 
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw) {
@@ -669,9 +814,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool dco_decode_box_autoadd_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as bool;
+  }
+
+  @protected
   double dco_decode_box_autoadd_f_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as double;
+  }
+
+  @protected
+  PlaybackStatus dco_decode_box_autoadd_playback_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_playback_status(raw);
+  }
+
+  @protected
+  int dco_decode_box_autoadd_u_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
+  }
+
+  @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_u_64(raw);
   }
 
   @protected
@@ -705,15 +874,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool? dco_decode_opt_box_autoadd_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_bool(raw);
+  }
+
+  @protected
   double? dco_decode_opt_box_autoadd_f_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_f_64(raw);
   }
 
   @protected
-  int dco_decode_u_8(dynamic raw) {
+  PlaybackStatus? dco_decode_opt_box_autoadd_playback_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
+    return raw == null ? null : dco_decode_box_autoadd_playback_status(raw);
+  }
+
+  @protected
+  int? dco_decode_opt_box_autoadd_u_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_u_32(raw);
+  }
+
+  @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_u_64(raw);
+  }
+
+  @protected
+  PlaybackStatus dco_decode_playback_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return PlaybackStatus(
+      positionSeconds: dco_decode_f_64(arr[0]),
+      currentStep: dco_decode_u_64(arr[1]),
+      isPaused: dco_decode_bool(arr[2]),
+      sampleRate: dco_decode_u_32(arr[3]),
+    );
   }
 
   @protected
@@ -723,15 +924,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  int dco_decode_box_autoadd_u_32(dynamic raw) {
+  BigInt dco_decode_u_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
+    return dcoDecodeU64(raw);
   }
 
   @protected
-  int? dco_decode_opt_box_autoadd_u_32(dynamic raw) {
+  int dco_decode_u_8(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_u_32(raw);
+    return raw as int;
   }
 
   @protected
@@ -767,9 +968,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool sse_decode_box_autoadd_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bool(deserializer));
+  }
+
+  @protected
   double sse_decode_box_autoadd_f_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_f_64(deserializer));
+  }
+
+  @protected
+  PlaybackStatus sse_decode_box_autoadd_playback_status(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_playback_status(deserializer));
+  }
+
+  @protected
+  int sse_decode_box_autoadd_u_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_u_32(deserializer));
+  }
+
+  @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_u_64(deserializer));
   }
 
   @protected
@@ -806,6 +1033,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bool(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   double? sse_decode_opt_box_autoadd_f_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -817,21 +1055,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  int sse_decode_u_8(SseDeserializer deserializer) {
+  PlaybackStatus? sse_decode_opt_box_autoadd_playback_status(
+    SseDeserializer deserializer,
+  ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint8();
-  }
 
-  @protected
-  int sse_decode_u_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint32();
-  }
-
-  @protected
-  int sse_decode_box_autoadd_u_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_u_32(deserializer));
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_playback_status(deserializer));
+    } else {
+      return null;
+    }
   }
 
   @protected
@@ -843,6 +1076,50 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     } else {
       return null;
     }
+  }
+
+  @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_u_64(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  PlaybackStatus sse_decode_playback_status(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_positionSeconds = sse_decode_f_64(deserializer);
+    var var_currentStep = sse_decode_u_64(deserializer);
+    var var_isPaused = sse_decode_bool(deserializer);
+    var var_sampleRate = sse_decode_u_32(deserializer);
+    return PlaybackStatus(
+      positionSeconds: var_positionSeconds,
+      currentStep: var_currentStep,
+      isPaused: var_isPaused,
+      sampleRate: var_sampleRate,
+    );
+  }
+
+  @protected
+  int sse_decode_u_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint32();
+  }
+
+  @protected
+  BigInt sse_decode_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getBigUint64();
+  }
+
+  @protected
+  int sse_decode_u_8(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint8();
   }
 
   @protected
@@ -884,9 +1161,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_f_64(double self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_f_64(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_playback_status(
+    PlaybackStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_playback_status(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self, serializer);
   }
 
   @protected
@@ -934,6 +1238,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bool(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_f_64(double? self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -944,15 +1258,66 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_u_8(int self, SseSerializer serializer) {
+  void sse_encode_opt_box_autoadd_playback_status(
+    PlaybackStatus? self,
+    SseSerializer serializer,
+  ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint8(self);
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_playback_status(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_u_32(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_u_64(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_playback_status(
+    PlaybackStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_f_64(self.positionSeconds, serializer);
+    sse_encode_u_64(self.currentStep, serializer);
+    sse_encode_bool(self.isPaused, serializer);
+    sse_encode_u_32(self.sampleRate, serializer);
   }
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint32(self);
+  }
+
+  @protected
+  void sse_encode_u_64(BigInt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putBigUint64(self);
+  }
+
+  @protected
+  void sse_encode_u_8(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putUint8(self);
   }
 
   @protected

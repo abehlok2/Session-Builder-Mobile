@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/logic/audio_helpers.dart';
 import 'package:session_builder_mobile/logic/state/session_editor_provider.dart';
 import 'package:session_builder_mobile/services/audio_session_service.dart';
-import 'package:session_builder_mobile/src/rust/mobile_api.dart';
+import 'package:session_builder_mobile/src/rust/mobile_api.dart' hide setVolume;
+import 'package:session_builder_mobile/src/rust/mobile_api.dart'
+    as mobile_api
+    show setVolume;
 
 abstract class AudioController {
   Future<void> start(String trackJson);
@@ -12,6 +16,7 @@ abstract class AudioController {
   Future<void> startFromPosition(double position);
   Future<void> setVolume(double volume);
   Future<void> stop();
+  Future<PlaybackStatus?> getStatus();
 }
 
 class DefaultAudioController implements AudioController {
@@ -22,7 +27,7 @@ class DefaultAudioController implements AudioController {
   Future<void> resume() => resumeAudio();
 
   @override
-  Future<void> setVolume(double volume) => setVolume(volume: volume);
+  Future<void> setVolume(double volume) => mobile_api.setVolume(volume: volume);
 
   @override
   Future<void> start(String trackJson) =>
@@ -34,6 +39,9 @@ class DefaultAudioController implements AudioController {
 
   @override
   Future<void> stop() => stopAudioSession();
+
+  @override
+  Future<PlaybackStatus?> getStatus() => getPlaybackStatus(); // Added
 }
 
 final audioControllerProvider = Provider<AudioController>((ref) {
@@ -81,11 +89,18 @@ class PlaybackState {
 }
 
 class PlaybackNotifier extends Notifier<PlaybackState> {
-  late final AudioController _audioController =
-      ref.read(audioControllerProvider);
+  late final AudioController _audioController = ref.read(
+    audioControllerProvider,
+  );
+  Timer? _pollingTimer; // Added
 
   @override
-  PlaybackState build() => const PlaybackState();
+  PlaybackState build() {
+    ref.onDispose(() {
+      _stopPolling();
+    });
+    return const PlaybackState();
+  }
 
   double _calculateTotalDuration(List<Map<String, dynamic>> steps) {
     double total = 0;
@@ -94,6 +109,40 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
       total += double.tryParse(durationStr) ?? 0;
     }
     return total;
+  }
+
+  void startPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      _errorMessageSafeUpdate();
+    });
+  }
+
+  void _stopPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = null;
+  }
+
+  Future<void> _errorMessageSafeUpdate() async {
+    try {
+      final status = await _audioController.getStatus();
+      if (status != null) {
+        final totalDuration = state.totalDurationSeconds;
+        final progress = totalDuration > 0
+            ? (status.positionSeconds / totalDuration).clamp(0.0, 1.0)
+            : 0.0;
+
+        state = state.copyWith(
+          isPlaying: !status.isPaused,
+          positionSeconds: status.positionSeconds,
+          activeStepIndex: status.currentStep,
+          progress: progress,
+          hasStarted: true,
+        );
+      }
+    } catch (e) {
+      debugPrint('Error polling playback status: $e');
+    }
   }
 
   Future<void> start(List<Map<String, dynamic>> steps) async {
@@ -111,6 +160,7 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
         positionSeconds: 0,
         totalDurationSeconds: totalDuration,
       );
+      startPolling(); // Added
     } catch (e) {
       debugPrint('Error starting playback: $e');
     }
@@ -120,11 +170,10 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
     await start(editorState.steps);
   }
 
-  Future<void> togglePlayPause({
-    List<Map<String, dynamic>>? steps,
-  }) async {
+  Future<void> togglePlayPause({List<Map<String, dynamic>>? steps}) async {
     if (state.isPlaying) {
       await _audioController.pause();
+      // State updated by polling, but optimistic update feels better
       state = state.copyWith(isPlaying: false);
     } else {
       if (!state.hasStarted) {
@@ -134,6 +183,7 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
       }
       await _audioController.resume();
       state = state.copyWith(isPlaying: true);
+      startPolling(); // Ensure polling is active
     }
   }
 
@@ -141,15 +191,8 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
     if (index < 0 || index >= steps.length) return;
     final startTime = _calculateStartTimeForStep(index, steps);
     await _audioController.startFromPosition(startTime);
-    final progress = state.totalDurationSeconds > 0
-        ? (startTime / state.totalDurationSeconds).clamp(0.0, 1.0)
-        : 0.0;
-    state = state.copyWith(
-      activeStepIndex: index,
-      positionSeconds: startTime,
-      progress: progress,
-      hasStarted: true,
-    );
+    // State will be updated by polling
+    startPolling(); // Added
   }
 
   Future<void> setVolumeLevel(double volume) async {
@@ -158,70 +201,44 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
   }
 
   Future<void> stop() async {
+    _stopPolling(); // Added
     await _audioController.stop();
     state = const PlaybackState();
   }
 
   void setProgress(double value) {
+    // Only update UI state for dragging, don't seek yet
     state = state.copyWith(progress: value);
   }
 
-  void syncPlaybackPosition({
-    required double positionSeconds,
-    int? activeStepIndex,
-  }) {
-    final progress = state.totalDurationSeconds > 0
-        ? (positionSeconds / state.totalDurationSeconds).clamp(0.0, 1.0)
-        : 0.0;
-    state = state.copyWith(
-      positionSeconds: positionSeconds,
-      activeStepIndex: activeStepIndex ?? state.activeStepIndex,
-      progress: progress,
-    );
-  }
+  // Removed syncPlaybackPosition as polling handles this
 
   Future<void> seekToPosition(
     double positionSeconds,
     List<Map<String, dynamic>> steps,
   ) async {
     await _audioController.startFromPosition(positionSeconds);
-    final progress = state.totalDurationSeconds > 0
-        ? (positionSeconds / state.totalDurationSeconds).clamp(0.0, 1.0)
-        : 0.0;
-    state = state.copyWith(
-      positionSeconds: positionSeconds,
-      progress: progress,
-      activeStepIndex: _getStepIndexForPosition(positionSeconds, steps),
-      hasStarted: true,
-    );
+    // Polling handles the rest
+    startPolling(); // Added
   }
 
-  int _getStepIndexForPosition(double positionSeconds, List<Map<String, dynamic>> steps) {
-    double accumulated = 0.0;
-    for (int i = 0; i < steps.length; i++) {
-      final durationStr = steps[i]['duration'].toString().replaceAll('s', '');
-      final duration = double.tryParse(durationStr) ?? 0.0;
-      accumulated += duration;
-      if (positionSeconds < accumulated) {
-        return i;
-      }
-    }
-    return steps.isEmpty ? 0 : steps.length - 1;
-  }
+  // Removed _getStepIndexForPosition as PlaybackStatus provides currentStep
 
   Future<void> seekToProgress(
     double progress,
     List<Map<String, dynamic>> steps,
   ) async {
-    final target =
-        state.totalDurationSeconds > 0 ? state.totalDurationSeconds * progress : 0;
+    final target = state.totalDurationSeconds > 0
+        ? state.totalDurationSeconds * progress
+        : 0.0;
     await seekToPosition(target, steps);
   }
 
   void ensureDurationFromSteps(List<Map<String, dynamic>> steps) {
     if (state.totalDurationSeconds == 0) {
-      state =
-          state.copyWith(totalDurationSeconds: _calculateTotalDuration(steps));
+      state = state.copyWith(
+        totalDurationSeconds: _calculateTotalDuration(steps),
+      );
     }
   }
 

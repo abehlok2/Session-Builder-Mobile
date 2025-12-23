@@ -1,10 +1,8 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/logic/state/playback_provider.dart';
 import 'package:session_builder_mobile/logic/state/session_editor_provider.dart';
 import 'package:session_builder_mobile/services/audio_session_service.dart';
-import 'package:session_builder_mobile/src/rust/mobile_api.dart';
 
 class SessionScreen extends ConsumerStatefulWidget {
   const SessionScreen({super.key});
@@ -14,60 +12,17 @@ class SessionScreen extends ConsumerStatefulWidget {
 }
 
 class _SessionScreenState extends ConsumerState<SessionScreen> {
-  Timer? _positionTimer;
-
   @override
   void initState() {
     super.initState();
-    _startPositionPolling();
   }
 
   @override
   void dispose() {
-    _positionTimer?.cancel();
     ref.read(playbackProvider.notifier).stop();
     // Deactivate audio session when leaving playback screen
     AudioSessionService.instance.deactivate();
     super.dispose();
-  }
-
-  /// Start polling playback position
-  void _startPositionPolling() {
-    _positionTimer?.cancel();
-    _positionTimer = Timer.periodic(const Duration(milliseconds: 250), (
-      _,
-    ) async {
-      await _updatePlaybackPosition();
-    });
-  }
-
-  /// Stop polling playback position
-  void _stopPositionPolling() {
-    _positionTimer?.cancel();
-    _positionTimer = null;
-  }
-
-  /// Update UI with current playback position from Rust backend
-  Future<void> _updatePlaybackPosition() async {
-    final playbackNotifier = ref.read(playbackProvider.notifier);
-    final stepsLength = ref.read(sessionEditorProvider).steps.length;
-    try {
-      final position = await getPlaybackPosition();
-      final currentStep = await getCurrentStep();
-
-      if (position != null && mounted) {
-        final activeIndex = currentStep?.toInt();
-        final clampedIndex = activeIndex != null && stepsLength > 0
-            ? activeIndex.clamp(0, stepsLength - 1).toInt()
-            : activeIndex;
-        playbackNotifier.syncPlaybackPosition(
-          positionSeconds: position,
-          activeStepIndex: clampedIndex,
-        );
-      }
-    } catch (e) {
-      debugPrint("Error updating playback position: $e");
-    }
   }
 
   /// Format seconds to MM:SS or H:MM:SS
