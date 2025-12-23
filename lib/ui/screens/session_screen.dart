@@ -19,31 +19,10 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
 
   @override
   void dispose() {
-    // Note: We handle stopping playback in _handleBack() before navigation,
-    // but this ensures cleanup if the widget is disposed in other ways.
-    _stopPlaybackSafely();
+    ref.read(playbackProvider.notifier).stop();
+    // Deactivate audio session when leaving playback screen
+    AudioSessionService.instance.deactivate();
     super.dispose();
-  }
-
-  /// Safely stop playback and deactivate audio session
-  void _stopPlaybackSafely() {
-    try {
-      ref.read(playbackProvider.notifier).stop();
-      AudioSessionService.instance.deactivate();
-    } catch (e) {
-      // Ignore errors during disposal
-      debugPrint('Error stopping playback during disposal: $e');
-    }
-  }
-
-  /// Handle back navigation - stop playback first, then navigate
-  Future<void> _handleBack() async {
-    // Stop playback before navigating away
-    await ref.read(playbackProvider.notifier).stop();
-    await AudioSessionService.instance.deactivate();
-    if (mounted) {
-      Navigator.of(context).pop();
-    }
   }
 
   /// Format seconds to MM:SS or H:MM:SS
@@ -70,24 +49,17 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
         ? playbackState.totalDurationSeconds
         : editorState.totalSeconds;
 
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) {
-          _handleBack();
-        }
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back, color: Colors.white),
-            onPressed: _handleBack,
-          ),
-          title: const Text("Session", style: TextStyle(color: Colors.white)),
-          backgroundColor: Colors.black,
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: () => Navigator.of(context).pop(),
         ),
-        body: SafeArea(
+        title: const Text("Session", style: TextStyle(color: Colors.white)),
+        backgroundColor: Colors.black,
+      ),
+      body: SafeArea(
         child: Column(
           children: [
             // --- Step List Layer ---
@@ -288,7 +260,6 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
               ),
             ),
           ],
-        ),
         ),
       ),
     );
