@@ -24,6 +24,12 @@ pub trait Voice: Send + Sync {
 
 const STARTUP_FADE_SECONDS: f32 = 3.0;
 
+/// Expected maximum buffer size in samples (stereo interleaved).
+/// This is used for pre-allocating audio buffers to avoid allocations
+/// in the real-time audio callback. Based on 2048 frames * 2 channels.
+/// This provides headroom for various device buffer sizes.
+const PREALLOCATED_BUFFER_SIZE: usize = 4096;
+
 #[derive(Clone, Copy)]
 pub enum CrossfadeCurve {
     Linear,
@@ -242,10 +248,14 @@ impl BackgroundNoise {
 
         let mix_frames = start_offset + usable_frames;
         let required_samples = mix_frames * 2;
+        // Ensure scratch is large enough but never shrink to avoid allocations
         if scratch.len() < required_samples {
             scratch.resize(required_samples, 0.0);
         }
-        scratch[..start_offset * 2].fill(0.0);
+        // Only clear the portion we need
+        for i in 0..(start_offset * 2) {
+            scratch[i] = 0.0;
+        }
         self.generator
             .generate(&mut scratch[start_offset * 2..required_samples]);
 
@@ -646,6 +656,11 @@ impl TrackScheduler {
         let startup_fade_samples = (STARTUP_FADE_SECONDS * sample_rate) as usize;
         let startup_fade_enabled = start_time <= 0.0;
 
+        // Pre-allocate crossfade buffers based on crossfade duration
+        // to avoid allocations during the audio callback
+        let crossfade_buffer_size = crossfade_samples * 2; // stereo interleaved
+        let preallocated_crossfade = crossfade_buffer_size.max(PREALLOCATED_BUFFER_SIZE);
+
         let mut sched = Self {
             track,
             current_sample: 0,
@@ -656,16 +671,18 @@ impl TrackScheduler {
             crossfade_samples,
             current_crossfade_samples: 0,
             crossfade_curve,
-            crossfade_envelope: Vec::new(),
-            crossfade_prev: Vec::new(),
-            crossfade_next: Vec::new(),
+            crossfade_envelope: Vec::with_capacity(crossfade_samples),
+            // Pre-allocate crossfade buffers to avoid allocations in audio callback
+            crossfade_prev: vec![0.0; preallocated_crossfade],
+            crossfade_next: vec![0.0; preallocated_crossfade],
             next_step_sample: 0,
             crossfade_active: false,
             absolute_sample: 0,
             paused: false,
             clips,
             background_noise,
-            scratch: Vec::new(),
+            // Pre-allocate all scratch buffers to avoid allocations in audio callback
+            scratch: vec![0.0; PREALLOCATED_BUFFER_SIZE],
             gpu_enabled: cfg.gpu,
             voice_gain: cfg.voice_gain,
             noise_gain: cfg.noise_gain,
@@ -675,8 +692,8 @@ impl TrackScheduler {
             startup_fade_enabled,
             #[cfg(feature = "gpu")]
             gpu: GpuMixer::new(),
-            voice_temp: Vec::new(),
-            noise_scratch: Vec::new(),
+            voice_temp: vec![0.0; PREALLOCATED_BUFFER_SIZE],
+            noise_scratch: vec![0.0; PREALLOCATED_BUFFER_SIZE],
             accumulated_phases: Vec::new(),
             loader_tx,
             loader_rx,
@@ -942,13 +959,15 @@ impl TrackScheduler {
 
     fn render_step_audio(&mut self, voices: &mut [StepVoice], step: &StepData, out: &mut [f32]) {
         let len = out.len();
-        if self.scratch.len() != len {
+        // Ensure buffers are large enough but never shrink them to avoid allocations.
+        // This is critical for real-time audio performance.
+        if self.scratch.len() < len {
             self.scratch.resize(len, 0.0);
         }
-        if self.noise_scratch.len() != len {
+        if self.noise_scratch.len() < len {
             self.noise_scratch.resize(len, 0.0);
         }
-        if self.voice_temp.len() != len {
+        if self.voice_temp.len() < len {
             self.voice_temp.resize(len, 0.0);
         }
 
@@ -1065,23 +1084,27 @@ impl TrackScheduler {
             }
         }
 
-        // TRIGGER PRELOAD FOR NEXT STEP (if not already cached or pending)
+        // TRIGGER PRELOAD FOR NEXT 2 STEPS (if not already cached or pending)
+        // Preloading 2 steps ahead gives more time for async loading to complete,
+        // reducing the chance of synchronous fallback which causes audio glitches.
         if let Some(tx) = &self.loader_tx {
-            let next_step_idx = self.current_step + 1;
-            if next_step_idx < self.track.steps.len() {
-                let already_cached = self.cached_next_voices.contains_key(&next_step_idx);
-                let already_pending = self.pending_requests.contains(&next_step_idx);
-                
-                if !already_cached && !already_pending {
-                    // Send request
-                     let req = LoadRequest {
-                        step_index: next_step_idx,
-                        step_data: self.track.steps[next_step_idx].clone(),
-                        sample_rate: self.sample_rate,
-                        track_data: self.track.clone(),
-                    };
-                    if tx.send(req).is_ok() {
-                        self.pending_requests.push(next_step_idx);
+            for lookahead in 1..=2 {
+                let next_step_idx = self.current_step + lookahead;
+                if next_step_idx < self.track.steps.len() {
+                    let already_cached = self.cached_next_voices.contains_key(&next_step_idx);
+                    let already_pending = self.pending_requests.contains(&next_step_idx);
+
+                    if !already_cached && !already_pending {
+                        // Send request
+                        let req = LoadRequest {
+                            step_index: next_step_idx,
+                            step_data: self.track.steps[next_step_idx].clone(),
+                            sample_rate: self.sample_rate,
+                            track_data: self.track.clone(),
+                        };
+                        if tx.send(req).is_ok() {
+                            self.pending_requests.push(next_step_idx);
+                        }
                     }
                 }
             }
@@ -1146,25 +1169,28 @@ impl TrackScheduler {
         if self.crossfade_active {
             let len = buffer.len();
             let frames = len / 2;
-            if self.crossfade_prev.len() != len {
+            // Ensure buffers are large enough but never shrink to avoid allocations.
+            // This is critical for real-time audio performance.
+            if self.crossfade_prev.len() < len {
                 self.crossfade_prev.resize(len, 0.0);
             }
-            if self.crossfade_next.len() != len {
+            if self.crossfade_next.len() < len {
                 self.crossfade_next.resize(len, 0.0);
             }
             let mut prev_buf = std::mem::take(&mut self.crossfade_prev);
             let mut next_buf = std::mem::take(&mut self.crossfade_next);
-            prev_buf.fill(0.0);
-            next_buf.fill(0.0);
+            // Only clear the portion we'll use, not the entire buffer
+            prev_buf[..len].fill(0.0);
+            next_buf[..len].fill(0.0);
 
             let step = self.track.steps[self.current_step].clone();
             let mut voices = std::mem::take(&mut self.active_voices);
-            self.render_step_audio(&mut voices, &step, &mut prev_buf);
+            self.render_step_audio(&mut voices, &step, &mut prev_buf[..len]);
             self.active_voices = voices;
             let next_step_idx = (self.current_step + 1).min(self.track.steps.len() - 1);
             let next_step = self.track.steps[next_step_idx].clone();
             let mut next_voices = std::mem::take(&mut self.next_voices);
-            self.render_step_audio(&mut next_voices, &next_step, &mut next_buf);
+            self.render_step_audio(&mut next_voices, &next_step, &mut next_buf[..len]);
             self.next_voices = next_voices;
 
             for i in 0..frames {
