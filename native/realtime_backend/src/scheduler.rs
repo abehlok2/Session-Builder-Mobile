@@ -101,6 +101,9 @@ pub struct TrackScheduler {
     pub noise_gain: f32,
     pub clip_gain: f32,
     pub master_gain: f32,
+    pub binaural_gain_override: Option<f32>,
+    pub noise_gain_override: Option<f32>,
+    pub normalization_level_override: Option<f32>,
     startup_fade_samples: usize,
     startup_fade_enabled: bool,
     #[cfg(feature = "gpu")]
@@ -689,6 +692,9 @@ impl TrackScheduler {
             noise_gain: cfg.noise_gain,
             clip_gain: cfg.clip_gain,
             master_gain: 1.0,
+            binaural_gain_override: None,
+            noise_gain_override: None,
+            normalization_level_override: None,
             startup_fade_samples,
             startup_fade_enabled,
             #[cfg(feature = "gpu")]
@@ -915,6 +921,15 @@ impl TrackScheduler {
             }
             Command::SetMasterGain(gain) => {
                 self.master_gain = gain.clamp(0.0, 1.0);
+            }
+            Command::SetBinauralGain(gain) => {
+                self.binaural_gain_override = Some(gain.clamp(0.0, MAX_INDIVIDUAL_GAIN));
+            }
+            Command::SetNoiseGain(gain) => {
+                self.noise_gain_override = Some(gain.clamp(0.0, MAX_INDIVIDUAL_GAIN));
+            }
+            Command::SetNormalizationLevel(level) => {
+                self.normalization_level_override = Some(level.clamp(0.0, 1.0));
             }
             Command::PushClipSamples {
                 index,
@@ -1208,9 +1223,13 @@ impl TrackScheduler {
 
             // Extract only the values needed for rendering (avoid cloning entire StepData)
             let step = &self.track.steps[self.current_step];
-            let step_norm = step.normalization_level;
-            let step_binaural = step.binaural_volume;
-            let step_noise = step.noise_volume;
+            let step_norm = self
+                .normalization_level_override
+                .unwrap_or(step.normalization_level);
+            let step_binaural = self
+                .binaural_gain_override
+                .unwrap_or(step.binaural_volume);
+            let step_noise = self.noise_gain_override.unwrap_or(step.noise_volume);
             let mut voices = std::mem::take(&mut self.active_voices);
             self.render_step_audio(
                 &mut voices,
@@ -1223,9 +1242,13 @@ impl TrackScheduler {
 
             let next_step_idx = (self.current_step + 1).min(self.track.steps.len() - 1);
             let next_step = &self.track.steps[next_step_idx];
-            let next_norm = next_step.normalization_level;
-            let next_binaural = next_step.binaural_volume;
-            let next_noise = next_step.noise_volume;
+            let next_norm = self
+                .normalization_level_override
+                .unwrap_or(next_step.normalization_level);
+            let next_binaural = self
+                .binaural_gain_override
+                .unwrap_or(next_step.binaural_volume);
+            let next_noise = self.noise_gain_override.unwrap_or(next_step.noise_volume);
             let mut next_voices = std::mem::take(&mut self.next_voices);
             self.render_step_audio(
                 &mut next_voices,
@@ -1278,9 +1301,13 @@ impl TrackScheduler {
             if !self.active_voices.is_empty() {
                 // Extract only the values needed for rendering (avoid cloning entire StepData)
                 let step = &self.track.steps[self.current_step];
-                let norm = step.normalization_level;
-                let binaural = step.binaural_volume;
-                let noise = step.noise_volume;
+                let norm = self
+                    .normalization_level_override
+                    .unwrap_or(step.normalization_level);
+                let binaural = self
+                    .binaural_gain_override
+                    .unwrap_or(step.binaural_volume);
+                let noise = self.noise_gain_override.unwrap_or(step.noise_volume);
                 let mut voices = std::mem::take(&mut self.active_voices);
                 self.render_step_audio(&mut voices, norm, binaural, noise, buffer);
                 self.active_voices = voices;

@@ -162,7 +162,9 @@ pub fn update_session(track_json: String) -> anyhow::Result<()> {
     
     let mut guard = ENGINE.lock();
     if let Some(state) = guard.as_mut() {
-        let _ = state.command_producer.try_push(Command::UpdateTrack(track_data));
+        if state.is_paused.load(Ordering::Relaxed) {
+            let _ = state.command_producer.try_push(Command::UpdateTrack(track_data));
+        }
     }
     Ok(())
 }
@@ -328,6 +330,29 @@ pub fn render_full_wav(track_json: String, out_path: String) -> anyhow::Result<(
 /// Alias for set_volume to match Python API naming
 pub fn set_master_gain(gain: f32) {
     set_volume(gain);
+}
+
+pub fn set_binaural_gain(gain: f32) {
+    let mut guard = ENGINE.lock();
+    if let Some(state) = guard.as_mut() {
+        let _ = state.command_producer.try_push(Command::SetBinauralGain(gain));
+    }
+}
+
+pub fn set_noise_gain(gain: f32) {
+    let mut guard = ENGINE.lock();
+    if let Some(state) = guard.as_mut() {
+        let _ = state.command_producer.try_push(Command::SetNoiseGain(gain));
+    }
+}
+
+pub fn set_normalization_level(level: f32) {
+    let mut guard = ENGINE.lock();
+    if let Some(state) = guard.as_mut() {
+        let _ = state
+            .command_producer
+            .try_push(Command::SetNormalizationLevel(level));
+    }
 }
 
 /// Get the current playback status
