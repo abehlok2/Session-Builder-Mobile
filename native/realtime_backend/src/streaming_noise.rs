@@ -550,7 +550,8 @@ impl FftNoiseGenerator {
         // Trigger async regeneration if we are past 10% point (giving 9x more time for slow workers)
         // Earlier trigger provides more headroom on mobile devices with variable CPU scheduling.
         if !self.next_buffer_ready && !self.worker_requested {
-            if self.cursor >= self.size / 10 {
+            let early_trigger = self.crossfade_len().min(4096); // small guard region
+            if self.cursor >= early_trigger {
                 // Swap out the old next buffer to send to worker for recycling
                 let mut buffer_to_recycle = std::mem::take(&mut self.next_buffer_storage);
                 // Ensure it's sized correctly (though it should be)
@@ -581,7 +582,6 @@ impl FftNoiseGenerator {
                     // Still waiting
                 }
                 Err(TryRecvError::Disconnected) => {
-                    println!("AsyncNoiseWorker disconnected!");
                     self.worker_requested = false;
                 }
             }
@@ -606,9 +606,6 @@ impl FftNoiseGenerator {
                 self.cursor = 0;
                 self.underrun_recovering = true;
                 self.underrun_fade_pos = 0;
-                // Log silently - avoid println in audio thread for performance
-                #[cfg(debug_assertions)]
-                eprintln!("NOISE UNDERRUN! Async worker too slow. Starting smooth recovery.");
             }
         }
 
@@ -634,13 +631,22 @@ impl FftNoiseGenerator {
         // Apply underrun recovery fade-in to prevent clicks after buffer loop
         if self.underrun_recovering {
             if self.underrun_fade_pos < UNDERRUN_FADE_SAMPLES {
-                // Smooth cosine fade-in
-                let t = self.underrun_fade_pos as f32 / UNDERRUN_FADE_SAMPLES as f32;
-                let fade = 0.5 * (1.0 - (std::f32::consts::PI * t).cos());
-                sample *= fade;
+                let pos = self.underrun_fade_pos;
+
+                let t = pos as f32 / UNDERRUN_FADE_SAMPLES as f32;
+                let fade_in = 0.5 * (1.0 - (std::f32::consts::PI * t).cos());
+                let fade_out = 1.0 - fade_in;
+
+                // tail sample from the previous end of buffer
+                let tail_base = self.buffer.len().saturating_sub(UNDERRUN_FADE_SAMPLES);
+                let tail_idx = (tail_base + pos).min(self.buffer.len().saturating_sub(1));
+                let tail_sample = self.buffer[tail_idx];
+
+                // `sample` is the head sample (current cursor position)
+                sample = tail_sample * fade_out + sample * fade_in;
+
                 self.underrun_fade_pos += 1;
             } else {
-                // Fade complete, resume normal playback
                 self.underrun_recovering = false;
                 self.underrun_fade_pos = 0;
             }

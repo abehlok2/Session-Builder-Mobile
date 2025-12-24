@@ -6,7 +6,7 @@ import 'package:session_builder_mobile/logic/state/audio_controller.dart';
 
 class SessionAudioHandler extends BaseAudioHandler with SeekHandler {
   SessionAudioHandler({AudioController? controller})
-      : _controller = controller ?? DefaultAudioController();
+    : _controller = controller ?? DefaultAudioController();
 
   final AudioController _controller;
   Timer? _pollingTimer;
@@ -27,7 +27,9 @@ class SessionAudioHandler extends BaseAudioHandler with SeekHandler {
     );
     await _controller.start(trackJson);
     _startPolling();
-    playbackState.add(_buildPlaybackState(playing: true, position: Duration.zero));
+    playbackState.add(
+      _buildPlaybackState(playing: true, position: Duration.zero),
+    );
   }
 
   @override
@@ -148,15 +150,15 @@ class AudioHandlerService {
     if (_handler != null) return _handler!;
     final handler = await AudioService.init(
       builder: () => SessionAudioHandler(),
-      config: const AudioServiceConfig(
+      config: AudioServiceConfig(
         androidNotificationChannelId:
             'com.session_builder_mobile.session_playback',
         androidNotificationChannelName: 'Session Playback',
         androidNotificationOngoing: true,
-        androidStopForegroundOnPause: false,
+        androidStopForegroundOnPause: true,
       ),
     );
-    _handler = handler as SessionAudioHandler;
+    _handler = handler;
     return _handler!;
   }
 

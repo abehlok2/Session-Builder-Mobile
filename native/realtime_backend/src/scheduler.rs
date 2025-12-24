@@ -3,8 +3,8 @@ use crate::gpu::GpuMixer;
 use crate::models::{BackgroundNoiseData, StepData, TrackData, MAX_INDIVIDUAL_GAIN};
 use crate::noise_params::NoiseParams;
 use crate::streaming_noise::StreamingNoise;
-use crate::voices::{voices_for_step, VoiceKind};
 use crate::voice_loader::{LoadRequest, LoadResponse};
+use crate::voices::{voices_for_step, VoiceKind};
 use crossbeam::channel::{Receiver, Sender};
 use std::collections::HashMap;
 use std::fs::File;
@@ -1073,13 +1073,6 @@ impl TrackScheduler {
     }
 
     pub fn process_block(&mut self, buffer: &mut [f32]) {
-        static mut SCHED_CALL_COUNT: usize = 0;
-        unsafe {
-            SCHED_CALL_COUNT += 1;
-            if SCHED_CALL_COUNT % 10 == 0 {
-                log::error!("Scheduler: process_block called. Buffer len: {}, Step: {}", buffer.len(), self.current_step);
-            }
-        }
         let frame_count = buffer.len() / 2;
         buffer.fill(0.0);
 
@@ -1094,7 +1087,8 @@ impl TrackScheduler {
         // POLL FOR COMPLETED VOICE LOADS
         if let Some(rx) = &self.loader_rx {
             while let Ok(response) = rx.try_recv() {
-                self.cached_next_voices.insert(response.step_index, response.voices);
+                self.cached_next_voices
+                    .insert(response.step_index, response.voices);
                 self.pending_requests.retain(|&x| x != response.step_index);
             }
         }
@@ -1128,12 +1122,13 @@ impl TrackScheduler {
         if self.active_voices.is_empty() && !self.crossfade_active {
             let step = &self.track.steps[self.current_step];
             // Try to get cached voices first, otherwise load synchronously
-            let mut new_voices = if let Some(voices) = self.cached_next_voices.remove(&self.current_step) {
-                voices
-            } else {
-                voices_for_step(step, self.sample_rate)
-            };
-            
+            let mut new_voices =
+                if let Some(voices) = self.cached_next_voices.remove(&self.current_step) {
+                    voices
+                } else {
+                    voices_for_step(step, self.sample_rate)
+                };
+
             // Apply accumulated phases from previous voices to maintain phase continuity
             Self::apply_phases_to_voices(&self.accumulated_phases, &mut new_voices);
             self.active_voices = new_voices;
@@ -1152,15 +1147,16 @@ impl TrackScheduler {
                 if self.current_sample >= step_samples.saturating_sub(fade_len) {
                     // Extract phases from current voices before transitioning
                     self.accumulated_phases = Self::extract_phases_from_voices(&self.active_voices);
-                    
+
                     // TRY TO USE PRELOADED VOICES
                     let next_step_idx = self.current_step + 1;
-                    let mut new_next_voices = if let Some(voices) = self.cached_next_voices.remove(&next_step_idx) {
-                        voices
-                    } else {
-                        // FALLBACK: Synchronous load (might block/glitch, but better than crashing)
-                        voices_for_step(next_step, self.sample_rate)
-                    };
+                    let mut new_next_voices =
+                        if let Some(voices) = self.cached_next_voices.remove(&next_step_idx) {
+                            voices
+                        } else {
+                            // FALLBACK: Synchronous load (might block/glitch, but better than crashing)
+                            voices_for_step(next_step, self.sample_rate)
+                        };
 
                     // Apply accumulated phases to the new voices for continuity
                     Self::apply_phases_to_voices(&self.accumulated_phases, &mut new_next_voices);
@@ -1204,7 +1200,13 @@ impl TrackScheduler {
             let step_binaural = step.binaural_volume;
             let step_noise = step.noise_volume;
             let mut voices = std::mem::take(&mut self.active_voices);
-            self.render_step_audio(&mut voices, step_norm, step_binaural, step_noise, &mut prev_buf[..len]);
+            self.render_step_audio(
+                &mut voices,
+                step_norm,
+                step_binaural,
+                step_noise,
+                &mut prev_buf[..len],
+            );
             self.active_voices = voices;
 
             let next_step_idx = (self.current_step + 1).min(self.track.steps.len() - 1);
@@ -1213,7 +1215,13 @@ impl TrackScheduler {
             let next_binaural = next_step.binaural_volume;
             let next_noise = next_step.noise_volume;
             let mut next_voices = std::mem::take(&mut self.next_voices);
-            self.render_step_audio(&mut next_voices, next_norm, next_binaural, next_noise, &mut next_buf[..len]);
+            self.render_step_audio(
+                &mut next_voices,
+                next_norm,
+                next_binaural,
+                next_noise,
+                &mut next_buf[..len],
+            );
             self.next_voices = next_voices;
 
             for i in 0..frames {
