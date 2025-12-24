@@ -187,7 +187,10 @@ fn biquad_time_varying_block(
 
 struct FftNoiseGenerator {
     buffer: Vec<f32>,
-    next_buffer: Option<Vec<f32>>,
+    // Pre-allocated storage for the next buffer (used during crossfade)
+    next_buffer_storage: Vec<f32>,
+    // Flag indicating if next_buffer_storage contains valid data ready for crossfade
+    next_buffer_ready: bool,
     cursor: usize,
     size: usize,
     exponent: f32,
@@ -212,6 +215,10 @@ struct FftNoiseGenerator {
     post_rms_accum: f32,
     rms_samples: usize,
     is_unmodulated: bool,
+
+    // Pre-allocated FFT scratch buffer to avoid allocations in audio callback.
+    // This buffer is reused for each regeneration cycle.
+    fft_scratch: Vec<Complex<f32>>,
 }
 
 impl FftNoiseGenerator {
@@ -311,8 +318,10 @@ impl FftNoiseGenerator {
         }
 
         let mut gen = Self {
-            buffer: Vec::new(),
-            next_buffer: None,
+            buffer: vec![0.0; size],
+            // Pre-allocate next buffer storage to avoid allocations in audio callback
+            next_buffer_storage: vec![0.0; size],
+            next_buffer_ready: false,
             cursor: 0,
             size,
             exponent,
@@ -337,24 +346,30 @@ impl FftNoiseGenerator {
             post_rms_accum: 0.0,
             rms_samples: 0,
             is_unmodulated: params.sweeps.is_empty(),
+
+            // Pre-allocate FFT scratch buffer to avoid allocations in audio callback
+            fft_scratch: vec![Complex::new(0.0, 0.0); size],
         };
 
-        gen.buffer = gen.regenerate_buffer();
+        gen.regenerate_buffer_in_place();
         gen
     }
 
-    fn regenerate_buffer(&mut self) -> Vec<f32> {
-        let mut white: Vec<Complex<f32>> = (0..self.size)
-            .map(|_| Complex::new(self.normal.sample(&mut self.rng), 0.0))
-            .collect();
+    /// Regenerates the noise buffer in-place using pre-allocated scratch space.
+    /// This avoids heap allocations in the audio callback which cause stuttering.
+    fn regenerate_buffer_in_place(&mut self) {
+        // Fill scratch buffer with white noise (reuse pre-allocated buffer)
+        for i in 0..self.size {
+            self.fft_scratch[i] = Complex::new(self.normal.sample(&mut self.rng), 0.0);
+        }
 
-        self.fft_forward.process(&mut white);
+        self.fft_forward.process(&mut self.fft_scratch);
 
         let nyquist = self.sample_rate / 2.0;
         let min_f = self.sample_rate / (self.size as f32);
 
-        if !white.is_empty() {
-            white[0] = Complex::new(0.0, 0.0);
+        if !self.fft_scratch.is_empty() {
+            self.fft_scratch[0] = Complex::new(0.0, 0.0);
         }
 
         for i in 1..=self.size / 2 {
@@ -376,15 +391,19 @@ impl FftNoiseGenerator {
 
             let scale = freq.powf(-current_exp / 2.0);
 
-            white[i] *= scale;
+            self.fft_scratch[i] *= scale;
             if i < self.size / 2 {
-                white[self.size - i] = white[i].conj();
+                self.fft_scratch[self.size - i] = self.fft_scratch[i].conj();
             }
         }
 
-        self.fft_inverse.process(&mut white);
+        self.fft_inverse.process(&mut self.fft_scratch);
 
-        let mut output: Vec<f32> = white.iter().map(|c| c.re / self.size as f32).collect();
+        // Copy FFT result to buffer (in-place, no allocation)
+        let size_f = self.size as f32;
+        for i in 0..self.size {
+            self.buffer[i] = self.fft_scratch[i].re / size_f;
+        }
 
         // --- RMS Locking Strategy ---
         // 1. Calculate the RMS of the raw generated buffer (before normalization).
@@ -395,39 +414,123 @@ impl FftNoiseGenerator {
         //    - Calculate gain = target_rms / current_rms.
         //    - Apply gain.
         //    - Soft clamp to [-1.0, 1.0] to prevent harsh clipping from outliers.
-        
+
         let mut sum_sq = 0.0;
-        for x in &output {
+        for x in &self.buffer {
             sum_sq += x * x;
         }
-        let current_rms = (sum_sq / output.len() as f32).sqrt();
+        let current_rms = (sum_sq / self.buffer.len() as f32).sqrt();
 
         if current_rms > 1e-9 {
             if let Some(target) = self.target_rms {
                  // LOCK TO TARGET RMS
                  let gain = target / current_rms;
-                 for x in &mut output {
+                 for x in &mut self.buffer {
                      *x = (*x * gain).clamp(-1.0, 1.0);
                  }
             } else {
                 // FIRST BUFFER: PEAK NORM + SET TARGET
-                let max_val = output.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
+                let max_val = self.buffer.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
                 if max_val > 1e-9 {
-                    for x in &mut output {
+                    for x in &mut self.buffer {
                         *x /= max_val;
                     }
                     // Calculate the RMS of this peak-normalized buffer to use as target
                     let mut sum_sq_norm = 0.0;
-                    for x in &output {
+                    for x in &self.buffer {
                         sum_sq_norm += x * x;
                     }
-                    let final_rms = (sum_sq_norm / output.len() as f32).sqrt();
+                    let final_rms = (sum_sq_norm / self.buffer.len() as f32).sqrt();
                     self.target_rms = Some(final_rms);
                 }
             }
         }
+    }
 
-        output
+    /// Regenerates the next buffer in-place, preparing it for crossfade.
+    /// Uses the pre-allocated fft_scratch and writes to a provided buffer.
+    fn regenerate_into(&mut self, target: &mut Vec<f32>) {
+        // Ensure target buffer is correctly sized
+        if target.len() != self.size {
+            target.resize(self.size, 0.0);
+        }
+
+        // Fill scratch buffer with white noise
+        for i in 0..self.size {
+            self.fft_scratch[i] = Complex::new(self.normal.sample(&mut self.rng), 0.0);
+        }
+
+        self.fft_forward.process(&mut self.fft_scratch);
+
+        let nyquist = self.sample_rate / 2.0;
+        let min_f = self.sample_rate / (self.size as f32);
+
+        if !self.fft_scratch.is_empty() {
+            self.fft_scratch[0] = Complex::new(0.0, 0.0);
+        }
+
+        for i in 1..=self.size / 2 {
+            let freq = i as f32 * self.sample_rate / self.size as f32;
+            if freq <= 0.0 {
+                continue;
+            }
+
+            let log_min = min_f.ln();
+            let log_max = nyquist.ln();
+            let log_f = freq.ln();
+
+            let denom = (log_max - log_min).max(1e-12);
+            let mut log_norm = (log_f - log_min) / denom;
+            log_norm = log_norm.clamp(0.0, 1.0);
+
+            let interp = log_norm.powf(self.distribution_curve);
+            let current_exp = self.exponent + (self.high_exponent - self.exponent) * interp;
+
+            let scale = freq.powf(-current_exp / 2.0);
+
+            self.fft_scratch[i] *= scale;
+            if i < self.size / 2 {
+                self.fft_scratch[self.size - i] = self.fft_scratch[i].conj();
+            }
+        }
+
+        self.fft_inverse.process(&mut self.fft_scratch);
+
+        // Copy FFT result to target buffer
+        let size_f = self.size as f32;
+        for i in 0..self.size {
+            target[i] = self.fft_scratch[i].re / size_f;
+        }
+
+        // Apply RMS locking
+        let mut sum_sq = 0.0;
+        for x in target.iter() {
+            sum_sq += x * x;
+        }
+        let current_rms = (sum_sq / target.len() as f32).sqrt();
+
+        if current_rms > 1e-9 {
+            if let Some(target_rms) = self.target_rms {
+                let gain = target_rms / current_rms;
+                for x in target.iter_mut() {
+                    *x = (*x * gain).clamp(-1.0, 1.0);
+                }
+            } else {
+                // First buffer case (shouldn't happen here but handle it)
+                let max_val = target.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
+                if max_val > 1e-9 {
+                    for x in target.iter_mut() {
+                        *x /= max_val;
+                    }
+                    let mut sum_sq_norm = 0.0;
+                    for x in target.iter() {
+                        sum_sq_norm += x * x;
+                    }
+                    let final_rms = (sum_sq_norm / target.len() as f32).sqrt();
+                    self.target_rms = Some(final_rms);
+                }
+            }
+        }
     }
 
     fn crossfade_len(&self) -> usize {
@@ -435,24 +538,28 @@ impl FftNoiseGenerator {
     }
 
     fn next(&mut self) -> f32 {
-        if self.buffer.is_empty() {
-            self.buffer = self.regenerate_buffer();
+        // Buffer should always be pre-allocated now, but regenerate if needed
+        if self.buffer.is_empty() || self.buffer.len() != self.size {
+            self.buffer.resize(self.size, 0.0);
+            self.regenerate_buffer_in_place();
         }
 
         let crossfade_len = self.crossfade_len();
 
-        if self.next_buffer.is_none() && self.cursor + crossfade_len >= self.buffer.len() {
-            self.next_buffer = Some(self.regenerate_buffer());
+        // Prepare next buffer for crossfade using pre-allocated storage (no allocation)
+        if !self.next_buffer_ready && self.cursor + crossfade_len >= self.buffer.len() {
+            self.regenerate_into(&mut self.next_buffer_storage);
+            self.next_buffer_ready = true;
         }
 
-        let mut sample = if let Some(ref next_buf) = self.next_buffer {
+        let mut sample = if self.next_buffer_ready {
             let crossfade_start = self.buffer.len().saturating_sub(crossfade_len);
-            if self.cursor >= crossfade_start && crossfade_len > 0 && !next_buf.is_empty() {
+            if self.cursor >= crossfade_start && crossfade_len > 0 && !self.next_buffer_storage.is_empty() {
                 let idx = self.cursor - crossfade_start;
                 let t = idx as f32 / crossfade_len as f32;
                 let fade_out = 0.5 * (1.0 + (std::f32::consts::PI * t).cos());
                 let fade_in = 1.0 - fade_out;
-                let next_sample = next_buf.get(idx).copied().unwrap_or(0.0);
+                let next_sample = self.next_buffer_storage.get(idx).copied().unwrap_or(0.0);
                 self.buffer[self.cursor] * fade_out + next_sample * fade_in
             } else {
                 self.buffer[self.cursor]
@@ -464,18 +571,21 @@ impl FftNoiseGenerator {
         self.cursor += 1;
 
         if self.cursor >= self.buffer.len() {
-            let consumed_from_next = if self.next_buffer.is_some() {
+            let consumed_from_next = if self.next_buffer_ready {
                 crossfade_len
             } else {
                 0
             };
 
-            if let Some(next) = self.next_buffer.take() {
-                let skip = consumed_from_next.min(next.len());
-                self.buffer = next;
+            if self.next_buffer_ready {
+                let skip = consumed_from_next.min(self.next_buffer_storage.len());
+                // Swap buffers in place (no allocation) using std::mem::swap
+                std::mem::swap(&mut self.buffer, &mut self.next_buffer_storage);
                 self.cursor = skip;
+                self.next_buffer_ready = false;
             } else {
-                self.buffer = self.regenerate_buffer();
+                // No next buffer, regenerate in place
+                self.regenerate_buffer_in_place();
                 self.cursor = 0;
             }
         }
@@ -602,6 +712,22 @@ struct OlaState {
     // Smoothed RMS compensation gains for each channel (prevents clicking)
     smoothed_gain_l: f64,
     smoothed_gain_r: f64,
+
+    // Pre-allocated buffers for process_ola_block() to avoid allocations in audio callback
+    t_vals: Vec<f32>,
+    lfo_main_l: Vec<f64>,
+    lfo_main_r: Vec<f64>,
+    lfo_extra_l: Vec<f64>,
+    lfo_extra_r: Vec<f64>,
+    min_series: Vec<f64>,
+    max_series: Vec<f64>,
+    q_series: Vec<f64>,
+    casc_series: Vec<usize>,
+    notch_freq_l: Vec<f64>,
+    notch_freq_r: Vec<f64>,
+    notch_freq_l_extra: Vec<f64>,
+    notch_freq_r_extra: Vec<f64>,
+    casc_series_clamped: Vec<usize>,
 }
 
 impl OlaState {
@@ -625,6 +751,22 @@ impl OlaState {
             block_r: vec![0.0; BLOCK_SIZE],
             smoothed_gain_l: 1.0,
             smoothed_gain_r: 1.0,
+            // Pre-allocate all buffers used in process_ola_block() to avoid
+            // allocations in the real-time audio callback
+            t_vals: vec![0.0; BLOCK_SIZE],
+            lfo_main_l: vec![0.0; BLOCK_SIZE],
+            lfo_main_r: vec![0.0; BLOCK_SIZE],
+            lfo_extra_l: vec![0.0; BLOCK_SIZE],
+            lfo_extra_r: vec![0.0; BLOCK_SIZE],
+            min_series: vec![0.0; BLOCK_SIZE],
+            max_series: vec![0.0; BLOCK_SIZE],
+            q_series: vec![0.0; BLOCK_SIZE],
+            casc_series: vec![0; BLOCK_SIZE],
+            notch_freq_l: vec![0.0; BLOCK_SIZE],
+            notch_freq_r: vec![0.0; BLOCK_SIZE],
+            notch_freq_l_extra: vec![0.0; BLOCK_SIZE],
+            notch_freq_r_extra: vec![0.0; BLOCK_SIZE],
+            casc_series_clamped: vec![0; BLOCK_SIZE],
         }
     }
 }
@@ -905,22 +1047,20 @@ impl StreamingNoise {
     }
 
     /// Process a single block using overlap-add approach (Python-compat mode)
+    /// IMPORTANT: This function uses pre-allocated buffers to avoid heap allocations
+    /// in the real-time audio callback, which would cause audio stuttering/catching.
     fn process_ola_block(&mut self) {
         let acc_size = self.ola.out_acc_l.len();
         let block_start_idx = self.ola.absolute_block_start;
 
-        // Precompute per-sample transition and LFO values to smoothly vary coefficients.
-        let mut t_vals = vec![0.0f32; BLOCK_SIZE];
-        let mut lfo_main_l = vec![0.0f64; BLOCK_SIZE];
-        let mut lfo_main_r = vec![0.0f64; BLOCK_SIZE];
-        let mut lfo_extra_l = vec![0.0f64; BLOCK_SIZE];
-        let mut lfo_extra_r = vec![0.0f64; BLOCK_SIZE];
+        // Use pre-allocated buffers instead of allocating new vectors each call.
+        // This is critical for real-time audio - allocations cause stuttering.
         let do_extra = self.start_intra_offset.abs() > 1e-6 || self.end_intra_offset.abs() > 1e-6;
 
         for i in 0..BLOCK_SIZE {
             let abs_idx = block_start_idx + i;
             let t = self.transition_fraction(abs_idx);
-            t_vals[i] = t;
+            self.ola.t_vals[i] = t;
 
             let lfo_freq = self.interpolate_lfo_freq(t);
             let phase_offset = self.interpolate_phase_offset(t);
@@ -928,11 +1068,11 @@ impl StreamingNoise {
 
             let l_phase = self.compute_lfo_phase(abs_idx, lfo_freq, 0.0);
             let r_phase = self.compute_lfo_phase(abs_idx, lfo_freq, phase_offset);
-            lfo_main_l[i] = lfo_value(l_phase, &self.lfo_waveform) as f64;
-            lfo_main_r[i] = lfo_value(r_phase, &self.lfo_waveform) as f64;
+            self.ola.lfo_main_l[i] = lfo_value(l_phase, &self.lfo_waveform) as f64;
+            self.ola.lfo_main_r[i] = lfo_value(r_phase, &self.lfo_waveform) as f64;
             if do_extra {
-                lfo_extra_l[i] = lfo_value(l_phase + intra_offset, &self.lfo_waveform) as f64;
-                lfo_extra_r[i] = lfo_value(r_phase + intra_offset, &self.lfo_waveform) as f64;
+                self.ola.lfo_extra_l[i] = lfo_value(l_phase + intra_offset, &self.lfo_waveform) as f64;
+                self.ola.lfo_extra_r[i] = lfo_value(r_phase + intra_offset, &self.lfo_waveform) as f64;
             }
         }
 
@@ -954,19 +1094,12 @@ impl StreamingNoise {
         // Apply notch filters for each sweep using smoothly changing coefficients.
         // We keep per-stage filter state across blocks and vary coefficients per-sample
         // to avoid block-edge clicks when parameters move quickly.
-        let mut min_series = vec![0.0f64; BLOCK_SIZE];
-        let mut max_series = vec![0.0f64; BLOCK_SIZE];
-        let mut q_series = vec![0.0f64; BLOCK_SIZE];
-        let mut casc_series = vec![0usize; BLOCK_SIZE];
-        let mut notch_freq_l = vec![0.0f64; BLOCK_SIZE];
-        let mut notch_freq_r = vec![0.0f64; BLOCK_SIZE];
-        let mut notch_freq_l_extra = vec![0.0f64; BLOCK_SIZE];
-        let mut notch_freq_r_extra = vec![0.0f64; BLOCK_SIZE];
+        // NOTE: Using pre-allocated buffers in self.ola to avoid allocations.
 
         for (si, sp) in self.sweep_params.iter().enumerate() {
             let rt = &mut self.sweep_runtime[si];
             for i in 0..BLOCK_SIZE {
-                let t = t_vals[i];
+                let t = self.ola.t_vals[i];
                 let min_f =
                     sp.start_min as f64 + (sp.end_min as f64 - sp.start_min as f64) * t as f64;
                 let max_f =
@@ -974,41 +1107,41 @@ impl StreamingNoise {
                 let q = sp.start_q as f64 + (sp.end_q as f64 - sp.start_q as f64) * t as f64;
                 let casc_f =
                     sp.start_casc as f64 + (sp.end_casc as f64 - sp.start_casc as f64) * t as f64;
-                min_series[i] = min_f;
-                max_series[i] = max_f;
-                q_series[i] = q;
-                casc_series[i] = casc_f.round().max(1.0) as usize;
+                self.ola.min_series[i] = min_f;
+                self.ola.max_series[i] = max_f;
+                self.ola.q_series[i] = q;
+                self.ola.casc_series[i] = casc_f.round().max(1.0) as usize;
             }
 
             for i in 0..BLOCK_SIZE {
-                let center_freq = (min_series[i] + max_series[i]) * 0.5;
-                let freq_range = (max_series[i] - min_series[i]) * 0.5;
-                notch_freq_l[i] = center_freq + freq_range * lfo_main_l[i];
-                notch_freq_r[i] = center_freq + freq_range * lfo_main_r[i];
+                let center_freq = (self.ola.min_series[i] + self.ola.max_series[i]) * 0.5;
+                let freq_range = (self.ola.max_series[i] - self.ola.min_series[i]) * 0.5;
+                self.ola.notch_freq_l[i] = center_freq + freq_range * self.ola.lfo_main_l[i];
+                self.ola.notch_freq_r[i] = center_freq + freq_range * self.ola.lfo_main_r[i];
                 if do_extra {
-                    notch_freq_l_extra[i] = center_freq + freq_range * lfo_extra_l[i];
-                    notch_freq_r_extra[i] = center_freq + freq_range * lfo_extra_r[i];
+                    self.ola.notch_freq_l_extra[i] = center_freq + freq_range * self.ola.lfo_extra_l[i];
+                    self.ola.notch_freq_r_extra[i] = center_freq + freq_range * self.ola.lfo_extra_r[i];
                 }
             }
 
-            let casc_series_clamped: Vec<usize> = casc_series
-                .iter()
-                .map(|c| (*c).min(rt.max_casc).max(1))
-                .collect();
+            // Compute clamped cascade counts using pre-allocated buffer
+            for i in 0..BLOCK_SIZE {
+                self.ola.casc_series_clamped[i] = self.ola.casc_series[i].min(rt.max_casc).max(1);
+            }
 
             biquad_time_varying_block(
                 &mut self.ola.block_l,
-                &notch_freq_l,
-                &q_series,
-                &casc_series_clamped,
+                &self.ola.notch_freq_l,
+                &self.ola.q_series,
+                &self.ola.casc_series_clamped,
                 &mut rt.l_main,
                 self.sample_rate as f64,
             );
             biquad_time_varying_block(
                 &mut self.ola.block_r,
-                &notch_freq_r,
-                &q_series,
-                &casc_series_clamped,
+                &self.ola.notch_freq_r,
+                &self.ola.q_series,
+                &self.ola.casc_series_clamped,
                 &mut rt.r_main,
                 self.sample_rate as f64,
             );
@@ -1016,17 +1149,17 @@ impl StreamingNoise {
             if do_extra {
                 biquad_time_varying_block(
                     &mut self.ola.block_l,
-                    &notch_freq_l_extra,
-                    &q_series,
-                    &casc_series_clamped,
+                    &self.ola.notch_freq_l_extra,
+                    &self.ola.q_series,
+                    &self.ola.casc_series_clamped,
                     &mut rt.l_extra,
                     self.sample_rate as f64,
                 );
                 biquad_time_varying_block(
                     &mut self.ola.block_r,
-                    &notch_freq_r_extra,
-                    &q_series,
-                    &casc_series_clamped,
+                    &self.ola.notch_freq_r_extra,
+                    &self.ola.q_series,
+                    &self.ola.casc_series_clamped,
                     &mut rt.r_extra,
                     self.sample_rate as f64,
                 );
