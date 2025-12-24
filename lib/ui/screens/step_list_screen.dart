@@ -133,7 +133,10 @@ class _StepListScreenState extends ConsumerState<StepListScreen> {
       );
       return;
     }
-    await ref.read(playbackProvider.notifier).start(editorState.steps);
+    await ref.read(playbackProvider.notifier).start(
+      editorState.steps,
+      sessionTitle: editorState.sessionName,
+    );
     if (mounted) {
       Navigator.of(
         context,

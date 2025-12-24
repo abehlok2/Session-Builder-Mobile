@@ -33,7 +33,10 @@ class _SavedSessionsScreenState extends ConsumerState<SavedSessionsScreen> {
 
   Future<void> _startSession(SessionModel session) async {
     ref.read(sessionEditorProvider.notifier).loadFromModel(session);
-    await ref.read(playbackProvider.notifier).start(session.steps);
+    await ref.read(playbackProvider.notifier).start(
+      session.steps,
+      sessionTitle: session.name,
+    );
     Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => const SessionScreen()));
