@@ -266,9 +266,13 @@ impl FftNoiseGenerator {
         // This ensures "chunked streaming" behavior where we regenerate new noise blocks repeatedly.
         let requested = (params.duration_seconds.max(0.0) * sample_rate) as usize;
         let default_size = 1 << 17; // ~3s at 44.1k
-        // Use requested size ONLY if it's smaller than default (e.g. for very short precise clips)
-        // Otherwise use default chunk size.
-        let mut size = if requested > 0 && requested < default_size { requested } else { default_size };
+                                    // Use requested size ONLY if it's smaller than default (e.g. for very short precise clips)
+                                    // Otherwise use default chunk size.
+        let mut size = if requested > 0 && requested < default_size {
+            requested
+        } else {
+            default_size
+        };
         if size < 8 {
             size = 8;
         }
@@ -423,11 +427,11 @@ impl FftNoiseGenerator {
 
         if current_rms > 1e-9 {
             if let Some(target) = self.target_rms {
-                 // LOCK TO TARGET RMS
-                 let gain = target / current_rms;
-                 for x in &mut self.buffer {
-                     *x = (*x * gain).clamp(-1.0, 1.0);
-                 }
+                // LOCK TO TARGET RMS
+                let gain = target / current_rms;
+                for x in &mut self.buffer {
+                    *x = (*x * gain).clamp(-1.0, 1.0);
+                }
             } else {
                 // FIRST BUFFER: PEAK NORM + SET TARGET
                 let max_val = self.buffer.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
@@ -548,13 +552,18 @@ impl FftNoiseGenerator {
 
         // Prepare next buffer for crossfade using pre-allocated storage (no allocation)
         if !self.next_buffer_ready && self.cursor + crossfade_len >= self.buffer.len() {
-            self.regenerate_into(&mut self.next_buffer_storage);
+            let mut next_storage = std::mem::take(&mut self.next_buffer_storage);
+            self.regenerate_into(&mut next_storage);
+            self.next_buffer_storage = next_storage;
             self.next_buffer_ready = true;
         }
 
         let mut sample = if self.next_buffer_ready {
             let crossfade_start = self.buffer.len().saturating_sub(crossfade_len);
-            if self.cursor >= crossfade_start && crossfade_len > 0 && !self.next_buffer_storage.is_empty() {
+            if self.cursor >= crossfade_start
+                && crossfade_len > 0
+                && !self.next_buffer_storage.is_empty()
+            {
                 let idx = self.cursor - crossfade_start;
                 let t = idx as f32 / crossfade_len as f32;
                 let fade_out = 0.5 * (1.0 + (std::f32::consts::PI * t).cos());
@@ -619,7 +628,7 @@ impl FftNoiseGenerator {
 
             if pre_rms > 1e-6 && post_rms > 1e-6 {
                 let target_gain = (pre_rms / post_rms).clamp(0.25, 16.0);
-                
+
                 if self.is_unmodulated {
                     // STATIC CALIBRATION FOR UNMODULATED NOISE
                     // Once we calculate the correct makeup gain (during warmup), we LOCK it.
@@ -627,14 +636,13 @@ impl FftNoiseGenerator {
                     if !self.renorm_initialized {
                         self.renorm_gain = target_gain;
                         self.smoothed_gain = target_gain;
-                         self.renorm_initialized = true;
+                        self.renorm_initialized = true;
                     }
                     // If already initialized, DO NOT CHANGE IT.
-                    
                 } else {
                     // DYNAMIC TRACKING FOR SWEPT NOISE
                     // For sweeps, the filter response changes over time, so we must track it.
-                    
+
                     // Apply hysteresis to avoid micro-jitters
                     let ratio_diff = (target_gain - self.renorm_gain).abs() / self.renorm_gain;
                     if ratio_diff > RENORM_HYSTERESIS_RATIO {
@@ -643,18 +651,18 @@ impl FftNoiseGenerator {
                             self.smoothed_gain = target_gain;
                             self.renorm_initialized = true;
                         } else {
-                             // Blend toward the target
+                            // Blend toward the target
                             self.renorm_gain = 0.8 * self.renorm_gain + 0.2 * target_gain;
                         }
                     }
                 }
             } else {
-                 // Fallback if signal is too quiet (shouldn't happen with RMS locking)
-                 if !self.renorm_initialized {
-                     self.renorm_gain = 1.0;
-                     self.smoothed_gain = 1.0;
-                     self.renorm_initialized = true;
-                 }
+                // Fallback if signal is too quiet (shouldn't happen with RMS locking)
+                if !self.renorm_initialized {
+                    self.renorm_gain = 1.0;
+                    self.smoothed_gain = 1.0;
+                    self.renorm_initialized = true;
+                }
             }
 
             self.pre_rms_accum = 0.0;
@@ -1071,8 +1079,10 @@ impl StreamingNoise {
             self.ola.lfo_main_l[i] = lfo_value(l_phase, &self.lfo_waveform) as f64;
             self.ola.lfo_main_r[i] = lfo_value(r_phase, &self.lfo_waveform) as f64;
             if do_extra {
-                self.ola.lfo_extra_l[i] = lfo_value(l_phase + intra_offset, &self.lfo_waveform) as f64;
-                self.ola.lfo_extra_r[i] = lfo_value(r_phase + intra_offset, &self.lfo_waveform) as f64;
+                self.ola.lfo_extra_l[i] =
+                    lfo_value(l_phase + intra_offset, &self.lfo_waveform) as f64;
+                self.ola.lfo_extra_r[i] =
+                    lfo_value(r_phase + intra_offset, &self.lfo_waveform) as f64;
             }
         }
 
@@ -1119,8 +1129,10 @@ impl StreamingNoise {
                 self.ola.notch_freq_l[i] = center_freq + freq_range * self.ola.lfo_main_l[i];
                 self.ola.notch_freq_r[i] = center_freq + freq_range * self.ola.lfo_main_r[i];
                 if do_extra {
-                    self.ola.notch_freq_l_extra[i] = center_freq + freq_range * self.ola.lfo_extra_l[i];
-                    self.ola.notch_freq_r_extra[i] = center_freq + freq_range * self.ola.lfo_extra_r[i];
+                    self.ola.notch_freq_l_extra[i] =
+                        center_freq + freq_range * self.ola.lfo_extra_l[i];
+                    self.ola.notch_freq_r_extra[i] =
+                        center_freq + freq_range * self.ola.lfo_extra_r[i];
                 }
             }
 
