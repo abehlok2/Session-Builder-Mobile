@@ -279,6 +279,10 @@ impl BackgroundNoise {
     fn set_gain(&mut self, gain: f32) {
         self.gain = gain;
     }
+
+    fn update_realtime_params(&mut self, params: &NoiseParams) -> bool {
+        self.generator.update_realtime_params(params)
+    }
 }
 
 /// Check if two noise configurations are compatible (same params, only gain differs).
@@ -345,6 +349,144 @@ fn apply_background_noise_overrides(cfg: &BackgroundNoiseData, params: &mut Nois
 
     if !cfg.amp_envelope.is_empty() {
         params.amp_envelope = cfg.amp_envelope.clone();
+    }
+}
+
+fn noise_params_realtime_safe(old: &NoiseParams, new: &NoiseParams) -> bool {
+    if (old.duration_seconds - new.duration_seconds).abs() > f32::EPSILON {
+        return false;
+    }
+    if old.sample_rate != new.sample_rate {
+        return false;
+    }
+    if old.transition != new.transition {
+        return false;
+    }
+    if old.noise_parameters != new.noise_parameters {
+        return false;
+    }
+    if (old.initial_offset - new.initial_offset).abs() > f32::EPSILON {
+        return false;
+    }
+    if (old.post_offset - new.post_offset).abs() > f32::EPSILON {
+        return false;
+    }
+    if old.input_audio_path != new.input_audio_path {
+        return false;
+    }
+    if old.exponent != new.exponent
+        || old.high_exponent != new.high_exponent
+        || old.distribution_curve != new.distribution_curve
+        || old.lowcut != new.lowcut
+        || old.highcut != new.highcut
+        || old.amplitude != new.amplitude
+        || old.seed != new.seed
+    {
+        return false;
+    }
+    if (old.start_time - new.start_time).abs() > f32::EPSILON
+        || (old.fade_in - new.fade_in).abs() > f32::EPSILON
+        || (old.fade_out - new.fade_out).abs() > f32::EPSILON
+    {
+        return false;
+    }
+    if old.amp_envelope != new.amp_envelope {
+        return false;
+    }
+    if old.static_notches != new.static_notches {
+        return false;
+    }
+    true
+}
+
+/// Check if realtime-safe parameters changed between two track configurations.
+/// Allows volume and noise sweep/LFO tweaks without rebuilding voices or clips.
+fn is_realtime_safe_change(old: &TrackData, new: &TrackData) -> bool {
+    // Must have same number of steps
+    if old.steps.len() != new.steps.len() {
+        return false;
+    }
+
+    // Must have same number of clips
+    if old.clips.len() != new.clips.len() {
+        return false;
+    }
+
+    // Global settings must match except for normalization_level
+    if old.global_settings.sample_rate != new.global_settings.sample_rate
+        || old.global_settings.crossfade_duration != new.global_settings.crossfade_duration
+        || old.global_settings.crossfade_curve != new.global_settings.crossfade_curve
+        || old.global_settings.output_filename != new.global_settings.output_filename
+    {
+        return false;
+    }
+
+    // Compare each step - everything must match except volume-related fields
+    for (old_step, new_step) in old.steps.iter().zip(new.steps.iter()) {
+        // Duration must match
+        if (old_step.duration - new_step.duration).abs() > 1e-9 {
+            return false;
+        }
+
+        // Voices must be identical
+        if old_step.voices.len() != new_step.voices.len() {
+            return false;
+        }
+        for (old_voice, new_voice) in old_step.voices.iter().zip(new_step.voices.iter()) {
+            if old_voice.synth_function_name != new_voice.synth_function_name
+                || old_voice.params != new_voice.params
+                || old_voice.is_transition != new_voice.is_transition
+                || old_voice.voice_type != new_voice.voice_type
+            {
+                return false;
+            }
+        }
+    }
+
+    // Clips must match exactly (including gain for now)
+    for (old_clip, new_clip) in old.clips.iter().zip(new.clips.iter()) {
+        if old_clip.file_path != new_clip.file_path
+            || (old_clip.start - new_clip.start).abs() > 1e-9
+            || (old_clip.amp - new_clip.amp).abs() > 1e-9
+        {
+            return false;
+        }
+    }
+
+    // Noise config must be compatible for realtime parameter updates
+    match (&old.background_noise, &new.background_noise) {
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => false,
+        (Some(old_data), Some(new_data)) => {
+            if old_data.file_path != new_data.file_path {
+                return false;
+            }
+            if (old_data.start_time - new_data.start_time).abs() > f64::EPSILON
+                || (old_data.fade_in - new_data.fade_in).abs() > f64::EPSILON
+                || (old_data.fade_out - new_data.fade_out).abs() > f64::EPSILON
+            {
+                return false;
+            }
+            if old_data.amp_envelope.len() != new_data.amp_envelope.len() {
+                return false;
+            }
+            for (old_point, new_point) in old_data.amp_envelope.iter().zip(&new_data.amp_envelope)
+            {
+                if (old_point[0] - new_point[0]).abs() > f32::EPSILON
+                    || (old_point[1] - new_point[1]).abs() > f32::EPSILON
+                {
+                    return false;
+                }
+            }
+
+            match (&old_data.params, &new_data.params) {
+                (None, None) => true,
+                (Some(_), None) | (None, Some(_)) => false,
+                (Some(old_params), Some(new_params)) => {
+                    noise_params_realtime_safe(old_params, new_params)
+                }
+            }
+        }
     }
 }
 
@@ -883,10 +1025,42 @@ impl TrackScheduler {
         }
     }
 
+    fn update_realtime(&mut self, track: TrackData) -> bool {
+        if !is_realtime_safe_change(&self.track, &track) {
+            return false;
+        }
+
+        if let (Some(ref mut noise), Some(noise_cfg)) =
+            (&mut self.background_noise, &track.background_noise)
+        {
+            noise.set_gain(noise_cfg.amp * self.noise_gain);
+            if let Some(params) = &noise_cfg.params {
+                let mut params = params.clone();
+                apply_background_noise_overrides(noise_cfg, &mut params);
+                if !noise.update_realtime_params(&params) {
+                    return false;
+                }
+            }
+        }
+
+        self.track = track;
+        true
+    }
+
     pub fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::UpdateTrack(t) => {
-                if self.paused || is_volume_only_change(&self.track, &t) {
+                if self.paused {
+                    self.pending_track_update = None;
+                    self.update_track(t);
+                } else {
+                    self.pending_track_update = Some(t);
+                }
+            }
+            Command::UpdateRealtime(t) => {
+                if self.update_realtime(t.clone()) {
+                    self.pending_track_update = None;
+                } else if self.paused {
                     self.pending_track_update = None;
                     self.update_track(t);
                 } else {

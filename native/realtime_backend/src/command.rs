@@ -3,6 +3,7 @@ use crate::models::TrackData;
 #[derive(Debug)]
 pub enum Command {
     UpdateTrack(TrackData),
+    UpdateRealtime(TrackData),
     /// Enable or disable GPU accelerated mixing
     EnableGpu(bool),
     /// Pause or resume playback

@@ -162,9 +162,12 @@ pub fn update_session(track_json: String) -> anyhow::Result<()> {
     
     let mut guard = ENGINE.lock();
     if let Some(state) = guard.as_mut() {
-        if state.is_paused.load(Ordering::Relaxed) {
-            let _ = state.command_producer.try_push(Command::UpdateTrack(track_data));
-        }
+        let cmd = if state.is_paused.load(Ordering::Relaxed) {
+            Command::UpdateTrack(track_data)
+        } else {
+            Command::UpdateRealtime(track_data)
+        };
+        let _ = state.command_producer.try_push(cmd);
     }
     Ok(())
 }
