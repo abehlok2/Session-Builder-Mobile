@@ -152,9 +152,9 @@ fn biquad_block(block: &mut [f64], coeffs: &Coeffs, st: &mut BiquadState64) {
 
 /// Apply a biquad with time-varying coefficients per sample while keeping state continuous.
 fn biquad_time_varying_block(
-    block: &mut [f64],
-    freq_series: &[f64],
-    q_series: &[f64],
+    block: &mut [f32],
+    freq_series: &[f32],
+    q_series: &[f32],
     casc_counts: &[usize],
     state: &mut [BiquadState64],
     sample_rate: f64,
@@ -169,14 +169,14 @@ fn biquad_time_varying_block(
             casc = max_stage;
         }
 
-        let freq = freq_series[i];
+        let freq = freq_series[i] as f64;
         if !freq.is_finite() || freq <= 0.0 || freq >= sample_rate * 0.49 {
             continue;
         }
-        let q = q_series[i].max(1e-6);
+        let q = (q_series[i] as f64).max(1e-6);
         let coeffs = notch_coeffs_f64(freq, q, sample_rate);
 
-        let mut sample = block[i];
+        let mut sample = block[i] as f64;
         for stage in 0..casc {
             let st = &mut state[stage];
             let out = sample * coeffs.b0 + st.z1;
@@ -184,7 +184,7 @@ fn biquad_time_varying_block(
             st.z2 = sample * coeffs.b2 - out * coeffs.a2;
             sample = out;
         }
-        block[i] = sample;
+        block[i] = sample as f32;
     }
 }
 
@@ -736,10 +736,12 @@ impl FftNoiseGenerator {
 
 // --- Precomputed Hann window (matching np.hanning) ---
 
-fn hann_window(size: usize) -> Vec<f64> {
+fn hann_window(size: usize) -> Vec<f32> {
     // np.hanning(N) = 0.5 - 0.5 * cos(2*pi*n/(N-1)), n = 0..N-1
     (0..size)
-        .map(|n| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * n as f64 / (size as f64 - 1.0)).cos())
+        .map(|n| {
+            0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / (size as f32 - 1.0)).cos()
+        })
         .collect()
 }
 
@@ -767,30 +769,30 @@ struct OlaState {
     absolute_block_start: usize,
 
     // Precomputed Hann window
-    window: Vec<f64>,
+    window: Vec<f32>,
 
     // Scratch buffers for block processing
-    block_l: Vec<f64>,
-    block_r: Vec<f64>,
+    block_l: Vec<f32>,
+    block_r: Vec<f32>,
 
     // Smoothed RMS compensation gains for each channel (prevents clicking)
-    smoothed_gain_l: f64,
-    smoothed_gain_r: f64,
+    smoothed_gain_l: f32,
+    smoothed_gain_r: f32,
 
     // Pre-allocated buffers for process_ola_block() to avoid allocations in audio callback
     t_vals: Vec<f32>,
-    lfo_main_l: Vec<f64>,
-    lfo_main_r: Vec<f64>,
-    lfo_extra_l: Vec<f64>,
-    lfo_extra_r: Vec<f64>,
-    min_series: Vec<f64>,
-    max_series: Vec<f64>,
-    q_series: Vec<f64>,
+    lfo_main_l: Vec<f32>,
+    lfo_main_r: Vec<f32>,
+    lfo_extra_l: Vec<f32>,
+    lfo_extra_r: Vec<f32>,
+    min_series: Vec<f32>,
+    max_series: Vec<f32>,
+    q_series: Vec<f32>,
     casc_series: Vec<usize>,
-    notch_freq_l: Vec<f64>,
-    notch_freq_r: Vec<f64>,
-    notch_freq_l_extra: Vec<f64>,
-    notch_freq_r_extra: Vec<f64>,
+    notch_freq_l: Vec<f32>,
+    notch_freq_r: Vec<f32>,
+    notch_freq_l_extra: Vec<f32>,
+    notch_freq_r_extra: Vec<f32>,
     casc_series_clamped: Vec<usize>,
 }
 
@@ -920,19 +922,8 @@ pub struct StreamingNoise {
 }
 
 impl StreamingNoise {
-    pub fn new(params: &NoiseParams, sample_rate: u32) -> Self {
-        let sample_rate_f = sample_rate as f32;
-        let duration_samples = (params.duration_seconds * sample_rate_f) as usize;
-
-        let lfo_freq = if params.transition {
-            params.start_lfo_freq
-        } else if params.lfo_freq != 0.0 {
-            params.lfo_freq
-        } else {
-            1.0 / 12.0
-        };
-
-        let sweep_params: Vec<SweepParams> = params
+    fn build_sweep_params(params: &NoiseParams) -> Vec<SweepParams> {
+        params
             .sweeps
             .iter()
             .map(|sw| {
@@ -975,7 +966,22 @@ impl StreamingNoise {
                     end_casc,
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    pub fn new(params: &NoiseParams, sample_rate: u32) -> Self {
+        let sample_rate_f = sample_rate as f32;
+        let duration_samples = (params.duration_seconds * sample_rate_f) as usize;
+
+        let lfo_freq = if params.transition {
+            params.start_lfo_freq
+        } else if params.lfo_freq != 0.0 {
+            params.lfo_freq
+        } else {
+            1.0 / 12.0
+        };
+
+        let sweep_params = Self::build_sweep_params(params);
 
         let sweep_runtime: Vec<SweepRuntime> = sweep_params
             .iter()
@@ -1033,6 +1039,49 @@ impl StreamingNoise {
         }
 
         gen
+    }
+
+    pub fn update_realtime_params(&mut self, params: &NoiseParams) -> bool {
+        if params.sweeps.len() != self.sweep_params.len() {
+            return false;
+        }
+
+        let lfo_freq = if params.transition {
+            params.start_lfo_freq
+        } else if params.lfo_freq != 0.0 {
+            params.lfo_freq
+        } else {
+            1.0 / 12.0
+        };
+
+        let sweep_params = Self::build_sweep_params(params);
+        for (rt, sp) in self.sweep_runtime.iter_mut().zip(&sweep_params) {
+            let max_casc = sp.start_casc.max(sp.end_casc).max(1);
+            if max_casc > rt.max_casc {
+                return false;
+            }
+            rt.max_casc = max_casc;
+        }
+
+        self.sweep_params = sweep_params;
+        self.transition = params.transition;
+        self.lfo_waveform = params.lfo_waveform.clone();
+        self.start_lfo_freq = if params.start_lfo_freq > 0.0 {
+            params.start_lfo_freq
+        } else {
+            lfo_freq
+        };
+        self.end_lfo_freq = if params.end_lfo_freq > 0.0 {
+            params.end_lfo_freq
+        } else {
+            lfo_freq
+        };
+        self.lfo_freq = lfo_freq;
+        self.start_lfo_phase_offset = params.start_lfo_phase_offset_deg.to_radians();
+        self.end_lfo_phase_offset = params.end_lfo_phase_offset_deg.to_radians();
+        self.start_intra_offset = params.start_intra_phase_offset_deg.to_radians();
+        self.end_intra_offset = params.end_intra_phase_offset_deg.to_radians();
+        true
     }
 
     pub fn new_with_calibrated_peak(
@@ -1132,30 +1181,28 @@ impl StreamingNoise {
 
             let l_phase = self.compute_lfo_phase(abs_idx, lfo_freq, 0.0);
             let r_phase = self.compute_lfo_phase(abs_idx, lfo_freq, phase_offset);
-            self.ola.lfo_main_l[i] = lfo_value(l_phase, &self.lfo_waveform) as f64;
-            self.ola.lfo_main_r[i] = lfo_value(r_phase, &self.lfo_waveform) as f64;
+            self.ola.lfo_main_l[i] = lfo_value(l_phase, &self.lfo_waveform);
+            self.ola.lfo_main_r[i] = lfo_value(r_phase, &self.lfo_waveform);
             if do_extra {
-                self.ola.lfo_extra_l[i] =
-                    lfo_value(l_phase + intra_offset, &self.lfo_waveform) as f64;
-                self.ola.lfo_extra_r[i] =
-                    lfo_value(r_phase + intra_offset, &self.lfo_waveform) as f64;
+                self.ola.lfo_extra_l[i] = lfo_value(l_phase + intra_offset, &self.lfo_waveform);
+                self.ola.lfo_extra_r[i] = lfo_value(r_phase + intra_offset, &self.lfo_waveform);
             }
         }
 
         // Copy input block from ring buffer WITHOUT windowing.
         // The window is applied AFTER filtering to avoid IIR filter state discontinuities.
         // Also compute RMS of the unwindowed input for later compensation.
-        let mut sum_sq_in: f64 = 0.0;
+        let mut sum_sq_in: f32 = 0.0;
         for i in 0..BLOCK_SIZE {
             let ring_idx =
                 (self.ola.input_write_pos + BLOCK_SIZE - self.ola.input_samples_buffered + i)
                     % BLOCK_SIZE;
-            let base = self.ola.input_ring[ring_idx] as f64;
+            let base = self.ola.input_ring[ring_idx];
             self.ola.block_l[i] = base;
             self.ola.block_r[i] = base;
             sum_sq_in += base * base;
         }
-        let rms_in = (sum_sq_in / BLOCK_SIZE as f64).sqrt();
+        let rms_in = (sum_sq_in / BLOCK_SIZE as f32).sqrt();
 
         // Apply notch filters for each sweep using smoothly changing coefficients.
         // We keep per-stage filter state across blocks and vary coefficients per-sample
@@ -1166,13 +1213,10 @@ impl StreamingNoise {
             let rt = &mut self.sweep_runtime[si];
             for i in 0..BLOCK_SIZE {
                 let t = self.ola.t_vals[i];
-                let min_f =
-                    sp.start_min as f64 + (sp.end_min as f64 - sp.start_min as f64) * t as f64;
-                let max_f =
-                    sp.start_max as f64 + (sp.end_max as f64 - sp.start_max as f64) * t as f64;
-                let q = sp.start_q as f64 + (sp.end_q as f64 - sp.start_q as f64) * t as f64;
-                let casc_f =
-                    sp.start_casc as f64 + (sp.end_casc as f64 - sp.start_casc as f64) * t as f64;
+                let min_f = sp.start_min + (sp.end_min - sp.start_min) * t;
+                let max_f = sp.start_max + (sp.end_max - sp.start_max) * t;
+                let q = sp.start_q + (sp.end_q - sp.start_q) * t;
+                let casc_f = sp.start_casc as f32 + (sp.end_casc as f32 - sp.start_casc as f32) * t;
                 self.ola.min_series[i] = min_f;
                 self.ola.max_series[i] = max_f;
                 self.ola.q_series[i] = q;
@@ -1242,14 +1286,14 @@ impl StreamingNoise {
         // For steady-state noise without sweeps, skipping this avoids per-block
         // volume fluctuations from minor RMS variations.
         if !self.sweep_params.is_empty() && rms_in > 1e-8 {
-            let mut sum_sq_l: f64 = 0.0;
-            let mut sum_sq_r: f64 = 0.0;
+            let mut sum_sq_l: f32 = 0.0;
+            let mut sum_sq_r: f32 = 0.0;
             for i in 0..BLOCK_SIZE {
                 sum_sq_l += self.ola.block_l[i] * self.ola.block_l[i];
                 sum_sq_r += self.ola.block_r[i] * self.ola.block_r[i];
             }
-            let rms_l = (sum_sq_l / BLOCK_SIZE as f64).sqrt();
-            let rms_r = (sum_sq_r / BLOCK_SIZE as f64).sqrt();
+            let rms_l = (sum_sq_l / BLOCK_SIZE as f32).sqrt();
+            let rms_r = (sum_sq_r / BLOCK_SIZE as f32).sqrt();
 
             // Compute target gains to restore original RMS level.
             // Clamp is critical: with deep/high-Q cascades, tiny rms_out values can
@@ -1269,7 +1313,7 @@ impl StreamingNoise {
             // Apply per-sample gain smoothing to prevent clicking from abrupt gain changes.
             // Use a smoothing coefficient that transitions over the block length.
             // This is more aggressive than the post-filter renorm since blocks are larger.
-            let smooth_coeff = GAIN_SMOOTHING_COEFF as f64;
+            let smooth_coeff = GAIN_SMOOTHING_COEFF;
             let one_minus_coeff = 1.0 - smooth_coeff;
 
             for sample in self.ola.block_l.iter_mut() {
@@ -1295,9 +1339,9 @@ impl StreamingNoise {
         let write_base = self.ola.acc_write_pos;
         for i in 0..BLOCK_SIZE {
             let acc_idx = (write_base + i) % acc_size;
-            self.ola.out_acc_l[acc_idx] += self.ola.block_l[i] as f32;
-            self.ola.out_acc_r[acc_idx] += self.ola.block_r[i] as f32;
-            self.ola.win_acc[acc_idx] += self.ola.window[i] as f32;
+            self.ola.out_acc_l[acc_idx] += self.ola.block_l[i];
+            self.ola.out_acc_r[acc_idx] += self.ola.block_r[i];
+            self.ola.win_acc[acc_idx] += self.ola.window[i];
         }
 
         // Advance write position by hop size

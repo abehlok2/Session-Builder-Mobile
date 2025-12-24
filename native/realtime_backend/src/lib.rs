@@ -135,7 +135,7 @@ fn update_track(track_json_str: String) -> PyResult<()> {
     let track_data: TrackData = serde_json::from_str(&track_json_str)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     if let Some(prod) = &mut *ENGINE_STATE.lock() {
-        let _ = prod.try_push(Command::UpdateTrack(track_data));
+        let _ = prod.try_push(Command::UpdateRealtime(track_data));
     }
     Ok(())
 }
@@ -340,7 +340,7 @@ pub fn start_stream(track_json_str: &str, sample_rate: u32, start_time: f64) {
 pub fn update_track(track_json_str: &str) {
     if let Some(prod) = &mut *ENGINE_STATE.lock() {
         if let Ok(track_data) = serde_json::from_str(track_json_str) {
-            let _ = prod.try_push(Command::UpdateTrack(track_data));
+            let _ = prod.try_push(Command::UpdateRealtime(track_data));
         }
     }
 }
