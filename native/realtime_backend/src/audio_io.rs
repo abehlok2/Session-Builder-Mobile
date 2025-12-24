@@ -285,7 +285,7 @@ fn run_audio_stream_android<C>(
     // Using 8x buffer capacity (vs 4x) provides more headroom for CPU scheduling
     // variability on mobile devices, reducing stuttering during background tasks.
     let mut stream = AudioStreamBuilder::default()
-        .set_performance_mode(PerformanceMode::LowLatency)
+        .set_performance_mode(PerformanceMode::None)
         .set_sharing_mode(SharingMode::Shared)
         .set_format::<f32>()
         .set_channel_count::<Stereo>()

@@ -1,5 +1,6 @@
 use crate::noise_params::NoiseParams;
 use biquad::{Biquad, Coefficients, DirectForm2Transposed, ToHertz, Type, Q_BUTTERWORTH_F32};
+use crossbeam::channel::{bounded, Receiver, Sender, TryRecvError};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
@@ -7,6 +8,7 @@ use rustfft::{num_complex::Complex, Fft, FftPlanner};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::sync::Arc;
+use std::thread;
 
 // --- Constants for Python-compat OLA mode ---
 // Reduced from 4096 to 2048 to lower CPU load and latency on mobile devices.
@@ -125,9 +127,9 @@ fn notch_coeffs_f64(freq: f64, q: f64, sample_rate: f64) -> Coeffs {
 /// Apply a biquad to a block with persistent state.
 ///
 /// IMPORTANT: In the original implementation, we reset state to zero on every call.
-/// With large cascade counts that are re-applied on every streaming block, that creates
-/// large block-edge transients (ringing) that inflate the *peak* seen during calibration.
-/// Peak-based normalization then collapses the perceived loudness (exactly your symptom).
+/// With large cascade counts, doing this in f32 can accumulate enough numeric
+/// error to cause huge peak spikes (or broad attenuation), which then makes
+/// peak-based normalization collapse the perceived loudness.
 fn biquad_block(block: &mut [f64], coeffs: &Coeffs, st: &mut BiquadState64) {
     // Direct Form II Transposed (biquad), in f64.
     let mut z1 = st.z1;
@@ -185,6 +187,134 @@ fn biquad_time_varying_block(
 
 // --- FFT Based Noise Generator (Matches Python's ColoredNoiseGenerator) ---
 
+struct NoiseGenRequest {
+    buffer: Vec<f32>,
+}
+
+struct NoiseGenResponse {
+    buffer: Vec<f32>,
+    target_rms: Option<f32>,
+}
+
+struct AsyncNoiseWorker {
+    rx: Receiver<NoiseGenRequest>,
+    tx: Sender<NoiseGenResponse>,
+
+    // Generation state moved from FftNoiseGenerator
+    size: usize,
+    exponent: f32,
+    high_exponent: f32,
+    distribution_curve: f32,
+    sample_rate: f32,
+    fft_forward: Arc<dyn Fft<f32>>,
+    fft_inverse: Arc<dyn Fft<f32>>,
+    rng: StdRng,
+    normal: Normal<f32>,
+
+    // Scratch buffer for FFT
+    fft_scratch: Vec<Complex<f32>>,
+
+    // Persist target_rms here to support the locking strategy
+    target_rms: Option<f32>,
+}
+
+impl AsyncNoiseWorker {
+    fn run(mut self) {
+        // Wait for requests
+        while let Ok(mut req) = self.rx.recv() {
+            self.regenerate_into(&mut req.buffer);
+            let _ = self.tx.send(NoiseGenResponse {
+                buffer: req.buffer,
+                target_rms: self.target_rms,
+            });
+        }
+    }
+
+    fn regenerate_into(&mut self, target: &mut Vec<f32>) {
+        // Ensure target buffer is correctly sized
+        if target.len() != self.size {
+            target.resize(self.size, 0.0);
+        }
+
+        // Fill scratch buffer with white noise (reuse pre-allocated buffer)
+        for i in 0..self.size {
+            self.fft_scratch[i] = Complex::new(self.normal.sample(&mut self.rng), 0.0);
+        }
+
+        self.fft_forward.process(&mut self.fft_scratch);
+
+        let nyquist = self.sample_rate / 2.0;
+        let min_f = self.sample_rate / (self.size as f32);
+
+        if !self.fft_scratch.is_empty() {
+            self.fft_scratch[0] = Complex::new(0.0, 0.0);
+        }
+
+        for i in 1..=self.size / 2 {
+            let freq = i as f32 * self.sample_rate / self.size as f32;
+            if freq <= 0.0 {
+                continue;
+            }
+
+            let log_min = min_f.ln();
+            let log_max = nyquist.ln();
+            let log_f = freq.ln();
+
+            let denom = (log_max - log_min).max(1e-12);
+            let mut log_norm = (log_f - log_min) / denom;
+            log_norm = log_norm.clamp(0.0, 1.0);
+
+            let interp = log_norm.powf(self.distribution_curve);
+            let current_exp = self.exponent + (self.high_exponent - self.exponent) * interp;
+
+            let scale = freq.powf(-current_exp / 2.0);
+
+            self.fft_scratch[i] *= scale;
+            if i < self.size / 2 {
+                self.fft_scratch[self.size - i] = self.fft_scratch[i].conj();
+            }
+        }
+
+        self.fft_inverse.process(&mut self.fft_scratch);
+
+        // Copy FFT result to target buffer
+        let size_f = self.size as f32;
+        for i in 0..self.size {
+            target[i] = self.fft_scratch[i].re / size_f;
+        }
+
+        // Apply RMS locking logic (same as original)
+        let mut sum_sq = 0.0;
+        for x in target.iter() {
+            sum_sq += x * x;
+        }
+        let current_rms = (sum_sq / target.len() as f32).sqrt();
+
+        if current_rms > 1e-9 {
+            if let Some(target_rms) = self.target_rms {
+                let gain = target_rms / current_rms;
+                for x in target.iter_mut() {
+                    *x = (*x * gain).clamp(-1.0, 1.0);
+                }
+            } else {
+                // First buffer case: Peak Norm + Set Target
+                let max_val = target.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
+                if max_val > 1e-9 {
+                    for x in target.iter_mut() {
+                        *x /= max_val;
+                    }
+                    let mut sum_sq_norm = 0.0;
+                    for x in target.iter() {
+                        sum_sq_norm += x * x;
+                    }
+                    let final_rms = (sum_sq_norm / target.len() as f32).sqrt();
+                    self.target_rms = Some(final_rms);
+                }
+            }
+        }
+    }
+}
+
 struct FftNoiseGenerator {
     buffer: Vec<f32>,
     // Pre-allocated storage for the next buffer (used during crossfade)
@@ -193,21 +323,18 @@ struct FftNoiseGenerator {
     next_buffer_ready: bool,
     cursor: usize,
     size: usize,
-    exponent: f32,
-    high_exponent: f32,
-    distribution_curve: f32,
-    lowcut: Option<f32>,
-    highcut: Option<f32>,
-    sample_rate: f32,
+
+    // Worker handles
+    worker_tx: Sender<NoiseGenRequest>,
+    worker_rx: Receiver<NoiseGenResponse>,
+    worker_requested: bool,
+
+    // Post-processing filters (keep in audio thread as they are lightweight IIR)
     lp_filters: Option<Vec<DirectForm2Transposed<f32>>>,
     hp_filters: Option<Vec<DirectForm2Transposed<f32>>>,
     base_amplitude: f32,
-    fft_forward: Arc<dyn Fft<f32>>,
-    fft_inverse: Arc<dyn Fft<f32>>,
-    rng: StdRng,
-    normal: Normal<f32>,
-    target_rms: Option<f32>,
 
+    // Renorm state
     renorm_gain: f32,
     smoothed_gain: f32,
     renorm_initialized: bool,
@@ -215,10 +342,6 @@ struct FftNoiseGenerator {
     post_rms_accum: f32,
     rms_samples: usize,
     is_unmodulated: bool,
-
-    // Pre-allocated FFT scratch buffer to avoid allocations in audio callback.
-    // This buffer is reused for each regeneration cycle.
-    fft_scratch: Vec<Complex<f32>>,
 }
 
 impl FftNoiseGenerator {
@@ -321,27 +444,56 @@ impl FftNoiseGenerator {
             }
         }
 
-        let mut gen = Self {
-            buffer: vec![0.0; size],
-            // Pre-allocate next buffer storage to avoid allocations in audio callback
-            next_buffer_storage: vec![0.0; size],
-            next_buffer_ready: false,
-            cursor: 0,
+        // Spawn Worker
+        let (req_tx, req_rx) = bounded::<NoiseGenRequest>(1); // Capacity 1 is enough
+        let (res_tx, res_rx) = bounded::<NoiseGenResponse>(1);
+
+        let worker = AsyncNoiseWorker {
+            rx: req_rx,
+            tx: res_tx,
             size,
             exponent,
             high_exponent,
             distribution_curve,
-            lowcut,
-            highcut,
             sample_rate,
-            lp_filters,
-            hp_filters,
-            base_amplitude: amplitude,
             fft_forward,
             fft_inverse,
             rng,
             normal,
+            fft_scratch: vec![Complex::new(0.0, 0.0); size],
             target_rms: None,
+        };
+
+        thread::spawn(move || worker.run());
+
+        // We need an initial buffer to play immediately.
+        // We'll generate it synchronously locally *once* before starting (or block waiting for worker).
+        // Since we are in the constructor (likely UI thread or loader), blocking briefly is better than
+        // silence. But we don't have the worker's code here anymore!
+        // TRICK: We can send a request to the worker and block-wait for the response right here!
+
+        let initial_buffer = vec![0.0; size];
+        let _ = req_tx.send(NoiseGenRequest {
+            buffer: initial_buffer,
+        });
+
+        // Block wait for initial buffer
+        let initial_res = res_rx.recv().expect("Worker died immediately");
+
+        let mut gen = Self {
+            buffer: initial_res.buffer,
+            // Pre-allocate next buffer storage
+            next_buffer_storage: vec![0.0; size],
+            next_buffer_ready: false,
+            cursor: 0,
+            size,
+            worker_tx: req_tx,
+            worker_rx: res_rx,
+            worker_requested: false,
+
+            lp_filters,
+            hp_filters,
+            base_amplitude: amplitude,
 
             renorm_gain: 1.0,
             smoothed_gain: 1.0,
@@ -350,191 +502,9 @@ impl FftNoiseGenerator {
             post_rms_accum: 0.0,
             rms_samples: 0,
             is_unmodulated: params.sweeps.is_empty(),
-
-            // Pre-allocate FFT scratch buffer to avoid allocations in audio callback
-            fft_scratch: vec![Complex::new(0.0, 0.0); size],
         };
 
-        gen.regenerate_buffer_in_place();
         gen
-    }
-
-    /// Regenerates the noise buffer in-place using pre-allocated scratch space.
-    /// This avoids heap allocations in the audio callback which cause stuttering.
-    fn regenerate_buffer_in_place(&mut self) {
-        // Fill scratch buffer with white noise (reuse pre-allocated buffer)
-        for i in 0..self.size {
-            self.fft_scratch[i] = Complex::new(self.normal.sample(&mut self.rng), 0.0);
-        }
-
-        self.fft_forward.process(&mut self.fft_scratch);
-
-        let nyquist = self.sample_rate / 2.0;
-        let min_f = self.sample_rate / (self.size as f32);
-
-        if !self.fft_scratch.is_empty() {
-            self.fft_scratch[0] = Complex::new(0.0, 0.0);
-        }
-
-        for i in 1..=self.size / 2 {
-            let freq = i as f32 * self.sample_rate / self.size as f32;
-            if freq <= 0.0 {
-                continue;
-            }
-
-            let log_min = min_f.ln();
-            let log_max = nyquist.ln();
-            let log_f = freq.ln();
-
-            let denom = (log_max - log_min).max(1e-12);
-            let mut log_norm = (log_f - log_min) / denom;
-            log_norm = log_norm.clamp(0.0, 1.0);
-
-            let interp = log_norm.powf(self.distribution_curve);
-            let current_exp = self.exponent + (self.high_exponent - self.exponent) * interp;
-
-            let scale = freq.powf(-current_exp / 2.0);
-
-            self.fft_scratch[i] *= scale;
-            if i < self.size / 2 {
-                self.fft_scratch[self.size - i] = self.fft_scratch[i].conj();
-            }
-        }
-
-        self.fft_inverse.process(&mut self.fft_scratch);
-
-        // Copy FFT result to buffer (in-place, no allocation)
-        let size_f = self.size as f32;
-        for i in 0..self.size {
-            self.buffer[i] = self.fft_scratch[i].re / size_f;
-        }
-
-        // --- RMS Locking Strategy ---
-        // 1. Calculate the RMS of the raw generated buffer (before normalization).
-        // 2. If this is the FIRST buffer (target_rms is None):
-        //    - Normalize to Peak 1.0 (Standard Peak Norm).
-        //    - Calculate the resulting RMS and store it as `target_rms`.
-        // 3. If this is a SUBSEQUENT buffer:
-        //    - Calculate gain = target_rms / current_rms.
-        //    - Apply gain.
-        //    - Soft clamp to [-1.0, 1.0] to prevent harsh clipping from outliers.
-
-        let mut sum_sq = 0.0;
-        for x in &self.buffer {
-            sum_sq += x * x;
-        }
-        let current_rms = (sum_sq / self.buffer.len() as f32).sqrt();
-
-        if current_rms > 1e-9 {
-            if let Some(target) = self.target_rms {
-                // LOCK TO TARGET RMS
-                let gain = target / current_rms;
-                for x in &mut self.buffer {
-                    *x = (*x * gain).clamp(-1.0, 1.0);
-                }
-            } else {
-                // FIRST BUFFER: PEAK NORM + SET TARGET
-                let max_val = self.buffer.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
-                if max_val > 1e-9 {
-                    for x in &mut self.buffer {
-                        *x /= max_val;
-                    }
-                    // Calculate the RMS of this peak-normalized buffer to use as target
-                    let mut sum_sq_norm = 0.0;
-                    for x in &self.buffer {
-                        sum_sq_norm += x * x;
-                    }
-                    let final_rms = (sum_sq_norm / self.buffer.len() as f32).sqrt();
-                    self.target_rms = Some(final_rms);
-                }
-            }
-        }
-    }
-
-    /// Regenerates the next buffer in-place, preparing it for crossfade.
-    /// Uses the pre-allocated fft_scratch and writes to a provided buffer.
-    fn regenerate_into(&mut self, target: &mut Vec<f32>) {
-        // Ensure target buffer is correctly sized
-        if target.len() != self.size {
-            target.resize(self.size, 0.0);
-        }
-
-        // Fill scratch buffer with white noise
-        for i in 0..self.size {
-            self.fft_scratch[i] = Complex::new(self.normal.sample(&mut self.rng), 0.0);
-        }
-
-        self.fft_forward.process(&mut self.fft_scratch);
-
-        let nyquist = self.sample_rate / 2.0;
-        let min_f = self.sample_rate / (self.size as f32);
-
-        if !self.fft_scratch.is_empty() {
-            self.fft_scratch[0] = Complex::new(0.0, 0.0);
-        }
-
-        for i in 1..=self.size / 2 {
-            let freq = i as f32 * self.sample_rate / self.size as f32;
-            if freq <= 0.0 {
-                continue;
-            }
-
-            let log_min = min_f.ln();
-            let log_max = nyquist.ln();
-            let log_f = freq.ln();
-
-            let denom = (log_max - log_min).max(1e-12);
-            let mut log_norm = (log_f - log_min) / denom;
-            log_norm = log_norm.clamp(0.0, 1.0);
-
-            let interp = log_norm.powf(self.distribution_curve);
-            let current_exp = self.exponent + (self.high_exponent - self.exponent) * interp;
-
-            let scale = freq.powf(-current_exp / 2.0);
-
-            self.fft_scratch[i] *= scale;
-            if i < self.size / 2 {
-                self.fft_scratch[self.size - i] = self.fft_scratch[i].conj();
-            }
-        }
-
-        self.fft_inverse.process(&mut self.fft_scratch);
-
-        // Copy FFT result to target buffer
-        let size_f = self.size as f32;
-        for i in 0..self.size {
-            target[i] = self.fft_scratch[i].re / size_f;
-        }
-
-        // Apply RMS locking
-        let mut sum_sq = 0.0;
-        for x in target.iter() {
-            sum_sq += x * x;
-        }
-        let current_rms = (sum_sq / target.len() as f32).sqrt();
-
-        if current_rms > 1e-9 {
-            if let Some(target_rms) = self.target_rms {
-                let gain = target_rms / current_rms;
-                for x in target.iter_mut() {
-                    *x = (*x * gain).clamp(-1.0, 1.0);
-                }
-            } else {
-                // First buffer case (shouldn't happen here but handle it)
-                let max_val = target.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
-                if max_val > 1e-9 {
-                    for x in target.iter_mut() {
-                        *x /= max_val;
-                    }
-                    let mut sum_sq_norm = 0.0;
-                    for x in target.iter() {
-                        sum_sq_norm += x * x;
-                    }
-                    let final_rms = (sum_sq_norm / target.len() as f32).sqrt();
-                    self.target_rms = Some(final_rms);
-                }
-            }
-        }
     }
 
     fn crossfade_len(&self) -> usize {
@@ -542,20 +512,63 @@ impl FftNoiseGenerator {
     }
 
     fn next(&mut self) -> f32 {
-        // Buffer should always be pre-allocated now, but regenerate if needed
-        if self.buffer.is_empty() || self.buffer.len() != self.size {
-            self.buffer.resize(self.size, 0.0);
-            self.regenerate_buffer_in_place();
-        }
-
         let crossfade_len = self.crossfade_len();
 
-        // Prepare next buffer for crossfade using pre-allocated storage (no allocation)
-        if !self.next_buffer_ready && self.cursor + crossfade_len >= self.buffer.len() {
-            let mut next_storage = std::mem::take(&mut self.next_buffer_storage);
-            self.regenerate_into(&mut next_storage);
-            self.next_buffer_storage = next_storage;
-            self.next_buffer_ready = true;
+        // Trigger async regeneration if we are past 25% point (giving 3x more time for slow workers)
+        if !self.next_buffer_ready && !self.worker_requested {
+            if self.cursor >= self.size / 4 {
+                // Swap out the old next buffer to send to worker for recycling
+                let mut buffer_to_recycle = std::mem::take(&mut self.next_buffer_storage);
+                // Ensure it's sized correctly (though it should be)
+                if buffer_to_recycle.len() != self.size {
+                    buffer_to_recycle.resize(self.size, 0.0);
+                }
+
+                if let Ok(_) = self.worker_tx.try_send(NoiseGenRequest {
+                    buffer: buffer_to_recycle,
+                }) {
+                    self.worker_requested = true;
+                } else {
+                    // Log potentially full channel
+                    // self.next_buffer_storage = vec![0.0; self.size];
+                }
+            }
+        }
+
+        // Check for response if we requested
+        if self.worker_requested {
+            match self.worker_rx.try_recv() {
+                Ok(response) => {
+                    self.next_buffer_storage = response.buffer;
+                    self.next_buffer_ready = true;
+                    self.worker_requested = false;
+                }
+                Err(TryRecvError::Empty) => {
+                    // Still waiting
+                }
+                Err(TryRecvError::Disconnected) => {
+                    println!("AsyncNoiseWorker disconnected!");
+                    self.worker_requested = false;
+                }
+            }
+        }
+
+        // --- Buffer Switching Logic ---
+        if self.cursor >= self.buffer.len() {
+            // If next buffer ready, swap
+            if self.next_buffer_ready {
+                let consumed_from_next = crossfade_len;
+                let skip = consumed_from_next.min(self.next_buffer_storage.len());
+                std::mem::swap(&mut self.buffer, &mut self.next_buffer_storage);
+                self.cursor = skip;
+                self.next_buffer_ready = false;
+                // recycle old buffer next time
+            } else {
+                // UNDERRUN! The worker was too slow.
+                // We MUST loop signals to avoid crashing or silence.
+                self.cursor = 0;
+                println!("NOISE UNDERRUN! Async worker too slow. Cursor reset.");
+            }
         }
 
         let mut sample = if self.next_buffer_ready {
@@ -579,26 +592,7 @@ impl FftNoiseGenerator {
 
         self.cursor += 1;
 
-        if self.cursor >= self.buffer.len() {
-            let consumed_from_next = if self.next_buffer_ready {
-                crossfade_len
-            } else {
-                0
-            };
-
-            if self.next_buffer_ready {
-                let skip = consumed_from_next.min(self.next_buffer_storage.len());
-                // Swap buffers in place (no allocation) using std::mem::swap
-                std::mem::swap(&mut self.buffer, &mut self.next_buffer_storage);
-                self.cursor = skip;
-                self.next_buffer_ready = false;
-            } else {
-                // No next buffer, regenerate in place
-                self.regenerate_buffer_in_place();
-                self.cursor = 0;
-            }
-        }
-
+        // Post-processing
         let pre_filter_sample = sample;
 
         if let Some(ref mut filters) = self.lp_filters {
