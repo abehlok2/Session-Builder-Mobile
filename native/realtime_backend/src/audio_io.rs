@@ -7,7 +7,7 @@ use oboe::{
     AudioStreamSafe, DataCallbackResult, Mono, PerformanceMode, SharingMode, Stereo,
 };
 use ringbuf::traits::Consumer;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::command::Command;
@@ -19,6 +19,80 @@ pub struct PlaybackState {
     pub elapsed_samples: Arc<AtomicU64>,
     pub current_step: Arc<AtomicU64>,
     pub is_paused: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "audio-telemetry")]
+struct AudioTelemetry {
+    block_count: AtomicU64,
+    max_amp_bits: AtomicU32,
+}
+
+#[cfg(feature = "audio-telemetry")]
+impl AudioTelemetry {
+    fn new() -> Self {
+        Self {
+            block_count: AtomicU64::new(0),
+            max_amp_bits: AtomicU32::new(0.0f32.to_bits()),
+        }
+    }
+
+    fn record_block(&self, data: &[f32]) {
+        self.block_count.fetch_add(1, Ordering::Relaxed);
+        let mut max_amp = 0.0f32;
+        for sample in data {
+            let abs = sample.abs();
+            if abs > max_amp {
+                max_amp = abs;
+            }
+        }
+        self.update_max_amp(max_amp);
+    }
+
+    fn update_max_amp(&self, value: f32) {
+        let mut current = self.max_amp_bits.load(Ordering::Relaxed);
+        loop {
+            let current_val = f32::from_bits(current);
+            if value <= current_val {
+                break;
+            }
+            match self.max_amp_bits.compare_exchange(
+                current,
+                value.to_bits(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(next) => current = next,
+            }
+        }
+    }
+}
+
+#[cfg(feature = "audio-telemetry")]
+fn spawn_audio_telemetry_thread(
+    stop_rx: Receiver<()>,
+    telemetry: Arc<AudioTelemetry>,
+    label: &'static str,
+) {
+    std::thread::spawn(move || {
+        let interval = std::time::Duration::from_secs(1);
+        loop {
+            if stop_rx.recv_timeout(interval).is_ok() {
+                break;
+            }
+            let blocks = telemetry.block_count.swap(0, Ordering::Relaxed);
+            let max_amp = f32::from_bits(
+                telemetry
+                    .max_amp_bits
+                    .swap(0.0f32.to_bits(), Ordering::Relaxed),
+            );
+            log::debug!(
+                "{label} telemetry: blocks={}, max_amp={:.4}",
+                blocks,
+                max_amp
+            );
+        }
+    });
 }
 
 pub fn run_audio_stream<C>(
@@ -78,29 +152,16 @@ pub fn run_audio_stream<C>(
 
     let mut sched = scheduler;
     let mut cmds = cmd_rx;
+    #[cfg(feature = "audio-telemetry")]
+    let telemetry = Arc::new(AudioTelemetry::new());
+    #[cfg(feature = "audio-telemetry")]
+    spawn_audio_telemetry_thread(stop_rx.clone(), telemetry.clone(), "CPAL");
     let audio_callback = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         while let Some(cmd) = cmds.try_pop() {
             sched.handle_command(cmd);
         }
-        static mut CALL_COUNT: usize = 0;
-        unsafe {
-            CALL_COUNT += 1;
-            if CALL_COUNT % 10 == 0 {
-                // Check if we are producing non-zero audio
-                let mut max_amp = 0.0f32;
-                for s in data.iter() {
-                    let abs = s.abs();
-                    if abs > max_amp {
-                        max_amp = abs;
-                    }
-                }
-                log::error!(
-                    "Audio Callback: Running. Block: {}, Max Amp: {:.4}",
-                    CALL_COUNT,
-                    max_amp
-                );
-            }
-        }
+        #[cfg(feature = "audio-telemetry")]
+        telemetry.record_block(data);
         sched.process_block(data);
 
         // Update shared playback state atomics for UI thread access
@@ -140,6 +201,8 @@ struct AndroidAudioCallback<C> {
     scheduler: TrackScheduler,
     cmd_rx: C,
     playback_state: Option<PlaybackState>,
+    #[cfg(feature = "audio-telemetry")]
+    telemetry: Arc<AudioTelemetry>,
 }
 
 #[cfg(target_os = "android")]
@@ -165,25 +228,8 @@ where
                 audio_data.len() * 2,
             )
         };
-        // ... rest of logic
-        static mut CALL_COUNT: usize = 0;
-        unsafe {
-            CALL_COUNT += 1;
-            if CALL_COUNT % 10 == 0 {
-                let mut max_amp = 0.0f32;
-                for s in float_slice.iter() {
-                    let abs = s.abs();
-                    if abs > max_amp {
-                        max_amp = abs;
-                    }
-                }
-                log::error!(
-                    "Oboe Callback: Running. Block: {}, Max Amp: {:.4}",
-                    CALL_COUNT,
-                    max_amp
-                );
-            }
-        }
+        #[cfg(feature = "audio-telemetry")]
+        self.telemetry.record_block(float_slice);
 
         self.scheduler.process_block(float_slice);
 
@@ -227,7 +273,11 @@ fn run_audio_stream_android<C>(
         scheduler,
         cmd_rx,
         playback_state,
+        #[cfg(feature = "audio-telemetry")]
+        telemetry: Arc::new(AudioTelemetry::new()),
     };
+    #[cfg(feature = "audio-telemetry")]
+    spawn_audio_telemetry_thread(stop_rx.clone(), callback.telemetry.clone(), "Oboe");
 
     // Use PerformanceMode::None instead of LowLatency for more stable playback.
     // LowLatency can cause buffer underruns on some devices leading to choppy audio.
