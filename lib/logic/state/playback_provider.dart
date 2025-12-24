@@ -2,47 +2,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/logic/audio_helpers.dart';
+import 'package:session_builder_mobile/logic/state/audio_controller.dart';
 import 'package:session_builder_mobile/logic/state/session_editor_provider.dart';
+import 'package:session_builder_mobile/services/audio_handler.dart';
 import 'package:session_builder_mobile/services/audio_session_service.dart';
-import 'package:session_builder_mobile/src/rust/mobile_api.dart' hide setVolume;
-import 'package:session_builder_mobile/src/rust/mobile_api.dart'
-    as mobile_api
-    show setVolume;
-
-abstract class AudioController {
-  Future<void> start(String trackJson);
-  Future<void> pause();
-  Future<void> resume();
-  Future<void> startFromPosition(double position);
-  Future<void> setVolume(double volume);
-  Future<void> stop();
-  Future<PlaybackStatus?> getStatus();
-}
-
-class DefaultAudioController implements AudioController {
-  @override
-  Future<void> pause() => pauseAudio();
-
-  @override
-  Future<void> resume() => resumeAudio();
-
-  @override
-  Future<void> setVolume(double volume) => mobile_api.setVolume(volume: volume);
-
-  @override
-  Future<void> start(String trackJson) =>
-      startAudioSession(trackJson: trackJson, startTime: 0.0);
-
-  @override
-  Future<void> startFromPosition(double position) =>
-      startFrom(position: position);
-
-  @override
-  Future<void> stop() => stopAudioSession();
-
-  @override
-  Future<PlaybackStatus?> getStatus() => getPlaybackStatus(); // Added
-}
 
 final audioControllerProvider = Provider<AudioController>((ref) {
   return DefaultAudioController();
@@ -92,6 +55,8 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
   late final AudioController _audioController = ref.read(
     audioControllerProvider,
   );
+  late final SessionAudioHandler _audioHandler =
+      AudioHandlerService.instance.handler;
   Timer? _pollingTimer; // Added
 
   @override
@@ -145,13 +110,20 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
     }
   }
 
-  Future<void> start(List<Map<String, dynamic>> steps) async {
+  Future<void> start(
+    List<Map<String, dynamic>> steps, {
+    String? sessionTitle,
+  }) async {
     if (steps.isEmpty) return;
     try {
       await AudioSessionService.instance.activate();
       final trackJson = AudioHelpers.generateTrackJson(steps: steps);
-      await _audioController.start(trackJson);
       final totalDuration = _calculateTotalDuration(steps);
+      await _audioHandler.startSession(
+        trackJson: trackJson,
+        duration: Duration(milliseconds: (totalDuration * 1000).round()),
+        title: sessionTitle,
+      );
       state = state.copyWith(
         isPlaying: true,
         hasStarted: true,
@@ -167,12 +139,12 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
   }
 
   Future<void> startFromEditor(SessionEditorState editorState) async {
-    await start(editorState.steps);
+    await start(editorState.steps, sessionTitle: editorState.sessionName);
   }
 
   Future<void> togglePlayPause({List<Map<String, dynamic>>? steps}) async {
     if (state.isPlaying) {
-      await _audioController.pause();
+      await _audioHandler.pause();
       // State updated by polling, but optimistic update feels better
       state = state.copyWith(isPlaying: false);
     } else {
@@ -181,7 +153,7 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
         await start(steps);
         return;
       }
-      await _audioController.resume();
+      await _audioHandler.play();
       state = state.copyWith(isPlaying: true);
       startPolling(); // Ensure polling is active
     }
@@ -190,7 +162,7 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
   Future<void> skipToStep(int index, List<Map<String, dynamic>> steps) async {
     if (index < 0 || index >= steps.length) return;
     final startTime = _calculateStartTimeForStep(index, steps);
-    await _audioController.startFromPosition(startTime);
+    await _audioHandler.seek(Duration(milliseconds: (startTime * 1000).round()));
     // State will be updated by polling
     startPolling(); // Added
   }
@@ -202,7 +174,7 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
 
   Future<void> stop() async {
     _stopPolling(); // Added
-    await _audioController.stop();
+    await _audioHandler.stop();
     state = const PlaybackState();
   }
 
@@ -217,7 +189,9 @@ class PlaybackNotifier extends Notifier<PlaybackState> {
     double positionSeconds,
     List<Map<String, dynamic>> steps,
   ) async {
-    await _audioController.startFromPosition(positionSeconds);
+    await _audioHandler.seek(
+      Duration(milliseconds: (positionSeconds * 1000).round()),
+    );
     // Polling handles the rest
     startPolling(); // Added
   }
