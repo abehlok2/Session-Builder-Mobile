@@ -6,9 +6,12 @@ use oboe::{
     AudioOutputCallback, AudioOutputStreamSafe, AudioStream, AudioStreamBase, AudioStreamBuilder,
     AudioStreamSafe, DataCallbackResult, Mono, PerformanceMode, SharingMode, Stereo,
 };
-use ringbuf::traits::Consumer;
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::HeapRb;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use crate::command::Command;
 
@@ -19,6 +22,106 @@ pub struct PlaybackState {
     pub elapsed_samples: Arc<AtomicU64>,
     pub current_step: Arc<AtomicU64>,
     pub is_paused: Arc<AtomicBool>,
+}
+
+const AUDIO_RING_MIN_SECONDS: f32 = 0.5;
+const AUDIO_RING_MAX_SECONDS: f32 = 2.0;
+const AUDIO_WORKER_BLOCK_FRAMES: usize = 512;
+
+fn samples_for_seconds(sample_rate: u32, seconds: f32, channels: usize) -> usize {
+    ((sample_rate as f32 * seconds).ceil() as usize).saturating_mul(channels)
+}
+
+fn mix_from_ringbuffer<C: Consumer<Item = f32>>(
+    consumer: &mut C,
+    data: &mut [f32],
+    last_sample: &mut f32,
+    low_watermark_samples: usize,
+) {
+    let available = consumer.occupied_len();
+    let copied = consumer.pop_slice(data);
+    if copied > 0 {
+        if available < low_watermark_samples {
+            let fade_len = copied.max(1) as f32;
+            for (idx, sample) in data[..copied].iter_mut().enumerate() {
+                let alpha = (idx + 1) as f32 / fade_len;
+                *sample = *last_sample * (1.0 - alpha) + *sample * alpha;
+            }
+        }
+        *last_sample = data[copied - 1];
+    }
+    if copied < data.len() {
+        for sample in &mut data[copied..] {
+            *sample = *last_sample;
+        }
+    }
+}
+
+fn update_playback_state(playback_state: &Option<PlaybackState>, scheduler: &TrackScheduler) {
+    if let Some(ref state) = playback_state {
+        state
+            .elapsed_samples
+            .store(scheduler.absolute_sample, Ordering::Relaxed);
+        state
+            .current_step
+            .store(scheduler.current_step as u64, Ordering::Relaxed);
+        state.is_paused.store(scheduler.paused, Ordering::Relaxed);
+    }
+}
+
+fn spawn_audio_worker<C>(
+    mut scheduler: TrackScheduler,
+    mut cmd_rx: C,
+    mut producer: ringbuf::HeapProd<f32>,
+    playback_state: Option<PlaybackState>,
+    stop_flag: Arc<AtomicBool>,
+    sample_rate: u32,
+    channels: usize,
+) where
+    C: Consumer<Item = Command> + Send + 'static,
+{
+    thread::spawn(move || {
+        let min_samples = samples_for_seconds(sample_rate, AUDIO_RING_MIN_SECONDS, channels);
+        let max_samples = samples_for_seconds(sample_rate, AUDIO_RING_MAX_SECONDS, channels)
+            .max(AUDIO_WORKER_BLOCK_FRAMES * channels);
+        let mut block = vec![0.0f32; AUDIO_WORKER_BLOCK_FRAMES * channels];
+
+        while !stop_flag.load(Ordering::Relaxed) {
+            while let Some(cmd) = cmd_rx.try_pop() {
+                scheduler.handle_command(cmd);
+            }
+
+            if producer.occupied_len() < min_samples {
+                let target = max_samples.min(producer.capacity().get());
+                while producer.occupied_len() < target
+                    && !stop_flag.load(Ordering::Relaxed)
+                {
+                    let vacant = producer.vacant_len();
+                    if vacant == 0 {
+                        break;
+                    }
+                    let mut samples_to_write = vacant
+                        .min(block.len())
+                        .min(target.saturating_sub(producer.occupied_len()));
+                    samples_to_write = (samples_to_write / channels) * channels;
+                    if samples_to_write == 0 {
+                        break;
+                    }
+                    if block.len() < samples_to_write {
+                        block.resize(samples_to_write, 0.0);
+                    }
+                    scheduler.process_block(&mut block[..samples_to_write]);
+                    let pushed = producer.push_slice(&block[..samples_to_write]);
+                    if pushed == 0 {
+                        break;
+                    }
+                    update_playback_state(&playback_state, &scheduler);
+                }
+            } else {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    });
 }
 
 #[cfg(feature = "audio-telemetry")]
@@ -150,30 +253,37 @@ pub fn run_audio_stream<C>(
         config.buffer_size = cpal::BufferSize::Fixed(4096);
     }
 
-    let mut sched = scheduler;
-    let mut cmds = cmd_rx;
+    let channels = 2usize;
+    let sample_rate = scheduler.sample_rate;
+    let max_samples = samples_for_seconds(sample_rate, AUDIO_RING_MAX_SECONDS, channels)
+        .max(AUDIO_WORKER_BLOCK_FRAMES * channels);
+    let rb = HeapRb::<f32>::new(max_samples);
+    let (producer, mut consumer) = rb.split();
+    let low_watermark_samples = samples_for_seconds(sample_rate, AUDIO_RING_MIN_SECONDS, channels);
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    spawn_audio_worker(
+        scheduler,
+        cmd_rx,
+        producer,
+        playback_state,
+        Arc::clone(&stop_flag),
+        sample_rate,
+        channels,
+    );
     #[cfg(feature = "audio-telemetry")]
     let telemetry = Arc::new(AudioTelemetry::new());
     #[cfg(feature = "audio-telemetry")]
     spawn_audio_telemetry_thread(stop_rx.clone(), telemetry.clone(), "CPAL");
+    let mut last_sample = 0.0f32;
     let audio_callback = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        while let Some(cmd) = cmds.try_pop() {
-            sched.handle_command(cmd);
-        }
+        mix_from_ringbuffer(
+            &mut consumer,
+            data,
+            &mut last_sample,
+            low_watermark_samples,
+        );
         #[cfg(feature = "audio-telemetry")]
         telemetry.record_block(data);
-        sched.process_block(data);
-
-        // Update shared playback state atomics for UI thread access
-        if let Some(ref state) = playback_state {
-            state
-                .elapsed_samples
-                .store(sched.absolute_sample, Ordering::Relaxed);
-            state
-                .current_step
-                .store(sched.current_step as u64, Ordering::Relaxed);
-            state.is_paused.store(sched.paused, Ordering::Relaxed);
-        }
     };
 
     let stream = match sample_format {
@@ -194,22 +304,20 @@ pub fn run_audio_stream<C>(
         .recv_timeout(std::time::Duration::from_millis(100))
         .is_err()
     {}
+    stop_flag.store(true, Ordering::Relaxed);
 }
 
 #[cfg(target_os = "android")]
-struct AndroidAudioCallback<C> {
-    scheduler: TrackScheduler,
-    cmd_rx: C,
-    playback_state: Option<PlaybackState>,
+struct AndroidAudioCallback {
+    audio_consumer: ringbuf::HeapCons<f32>,
+    last_sample: f32,
+    low_watermark_samples: usize,
     #[cfg(feature = "audio-telemetry")]
     telemetry: Arc<AudioTelemetry>,
 }
 
 #[cfg(target_os = "android")]
-impl<C> AudioOutputCallback for AndroidAudioCallback<C>
-where
-    C: Consumer<Item = Command> + Send,
-{
+impl AudioOutputCallback for AndroidAudioCallback {
     type FrameType = (f32, Stereo);
 
     fn on_audio_ready(
@@ -217,10 +325,6 @@ where
         _stream: &mut dyn AudioOutputStreamSafe,
         audio_data: &mut [(f32, f32)],
     ) -> DataCallbackResult {
-        while let Some(cmd) = self.cmd_rx.try_pop() {
-            self.scheduler.handle_command(cmd);
-        }
-
         // Cast (f32, f32) slice to f32 slice for process_block
         let float_slice = unsafe {
             std::slice::from_raw_parts_mut(
@@ -228,22 +332,14 @@ where
                 audio_data.len() * 2,
             )
         };
+        mix_from_ringbuffer(
+            &mut self.audio_consumer,
+            float_slice,
+            &mut self.last_sample,
+            self.low_watermark_samples,
+        );
         #[cfg(feature = "audio-telemetry")]
         self.telemetry.record_block(float_slice);
-
-        self.scheduler.process_block(float_slice);
-
-        if let Some(ref state) = self.playback_state {
-            state
-                .elapsed_samples
-                .store(self.scheduler.absolute_sample, Ordering::Relaxed);
-            state
-                .current_step
-                .store(self.scheduler.current_step as u64, Ordering::Relaxed);
-            state
-                .is_paused
-                .store(self.scheduler.paused, Ordering::Relaxed);
-        }
 
         DataCallbackResult::Continue
     }
@@ -269,10 +365,28 @@ fn run_audio_stream_android<C>(
 {
     log::error!("REALTIME_BACKEND: Starting Oboe stream (Android specialized)...");
 
-    let callback = AndroidAudioCallback {
+    let channels = 2usize;
+    let sample_rate = scheduler.sample_rate;
+    let max_samples = samples_for_seconds(sample_rate, AUDIO_RING_MAX_SECONDS, channels)
+        .max(AUDIO_WORKER_BLOCK_FRAMES * channels);
+    let rb = HeapRb::<f32>::new(max_samples);
+    let (producer, consumer) = rb.split();
+    let low_watermark_samples = samples_for_seconds(sample_rate, AUDIO_RING_MIN_SECONDS, channels);
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    spawn_audio_worker(
         scheduler,
         cmd_rx,
+        producer,
         playback_state,
+        Arc::clone(&stop_flag),
+        sample_rate,
+        channels,
+    );
+
+    let callback = AndroidAudioCallback {
+        audio_consumer: consumer,
+        last_sample: 0.0f32,
+        low_watermark_samples,
         #[cfg(feature = "audio-telemetry")]
         telemetry: Arc::new(AudioTelemetry::new()),
     };
@@ -310,6 +424,7 @@ fn run_audio_stream_android<C>(
         .recv_timeout(std::time::Duration::from_millis(100))
         .is_err()
     {}
+    stop_flag.store(true, Ordering::Relaxed);
 }
 
 // The actual stop logic is handled via the channel in `run_audio_stream`.
