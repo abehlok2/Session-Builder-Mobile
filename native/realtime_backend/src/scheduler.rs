@@ -118,6 +118,7 @@ pub struct TrackScheduler {
     loader_rx: Option<Receiver<LoadResponse>>,
     cached_next_voices: HashMap<usize, Vec<StepVoice>>,
     pending_requests: Vec<usize>,
+    pending_track_update: Option<TrackData>,
 }
 
 pub enum ClipSamples {
@@ -699,6 +700,7 @@ impl TrackScheduler {
             loader_rx,
             cached_next_voices: HashMap::new(),
             pending_requests: Vec::new(),
+            pending_track_update: None,
         };
 
         let start_samples = (start_time * sample_rate as f64) as usize;
@@ -877,7 +879,14 @@ impl TrackScheduler {
 
     pub fn handle_command(&mut self, cmd: Command) {
         match cmd {
-            Command::UpdateTrack(t) => self.update_track(t),
+            Command::UpdateTrack(t) => {
+                if self.paused || is_volume_only_change(&self.track, &t) {
+                    self.pending_track_update = None;
+                    self.update_track(t);
+                } else {
+                    self.pending_track_update = Some(t);
+                }
+            }
             Command::EnableGpu(enable) => {
                 self.gpu_enabled = enable;
             }
@@ -1033,6 +1042,9 @@ impl TrackScheduler {
 
     pub fn pause(&mut self) {
         self.paused = true;
+        if let Some(track) = self.pending_track_update.take() {
+            self.update_track(track);
+        }
     }
 
     pub fn resume(&mut self) {
