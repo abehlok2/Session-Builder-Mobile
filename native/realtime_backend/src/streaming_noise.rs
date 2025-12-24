@@ -23,19 +23,22 @@ const CROSSFADE_SAMPLES: usize = 2048;
 
 // --- Renormalization window for post-filter RMS tracking ---
 // Increased from 4096 to reduce frequency of gain recalculations and improve
-// stability for steady-state noise (now ~186ms at 44.1kHz instead of ~93ms)
-const RENORM_WINDOW: usize = 8192;
+// stability for steady-state noise (now ~372ms at 44.1kHz instead of ~186ms)
+// Larger window = more stable gain but slower response to filter changes.
+const RENORM_WINDOW: usize = 16384;
 
 // --- Hysteresis threshold for gain adjustments ---
 // Only apply gain correction if the target differs by more than this ratio from current.
 // This prevents continuous micro-adjustments from RMS variations in steady-state noise.
-const RENORM_HYSTERESIS_RATIO: f32 = 0.05;
+// Increased from 0.05 to 0.10 for more stability on mobile devices.
+const RENORM_HYSTERESIS_RATIO: f32 = 0.10;
 
 // --- Per-sample gain smoothing coefficient ---
 // This coefficient determines how quickly gain changes are applied per-sample.
-// A value of 0.9998 creates a very smooth transition over ~5000 samples (~113ms at 44.1kHz)
+// A value of 0.99995 creates a very smooth transition over ~20000 samples (~453ms at 44.1kHz)
 // to prevent clicking from abrupt gain changes. Higher values = smoother but slower response.
-const GAIN_SMOOTHING_COEFF: f32 = 0.9998;
+// Increased from 0.9998 for more stable volume on mobile devices.
+const GAIN_SMOOTHING_COEFF: f32 = 0.99995;
 
 // --- Helper Functions ---
 
@@ -315,6 +318,11 @@ impl AsyncNoiseWorker {
     }
 }
 
+// --- Underrun recovery fade length ---
+// Number of samples to fade in/out when recovering from an underrun.
+// This prevents clicks when looping the buffer due to async worker being too slow.
+const UNDERRUN_FADE_SAMPLES: usize = 512;
+
 struct FftNoiseGenerator {
     buffer: Vec<f32>,
     // Pre-allocated storage for the next buffer (used during crossfade)
@@ -342,6 +350,10 @@ struct FftNoiseGenerator {
     post_rms_accum: f32,
     rms_samples: usize,
     is_unmodulated: bool,
+
+    // Underrun recovery state
+    underrun_recovering: bool,
+    underrun_fade_pos: usize,
 }
 
 impl FftNoiseGenerator {
@@ -385,10 +397,11 @@ impl FftNoiseGenerator {
             .unwrap_or(1.0);
         let seed = params.seed.unwrap_or(1).max(0) as u64;
 
-        // Limit the FFT buffer size to ~3s max to prevent huge allocations for long steps.
+        // Limit the FFT buffer size to ~0.74s max to prevent CPU stalls on mobile devices.
+        // Smaller buffers mean faster generation times, reducing the chance of underruns.
         // This ensures "chunked streaming" behavior where we regenerate new noise blocks repeatedly.
         let requested = (params.duration_seconds.max(0.0) * sample_rate) as usize;
-        let default_size = 1 << 17; // ~3s at 44.1k
+        let default_size = 1 << 15; // ~0.74s at 44.1k (reduced from 1<<17 for mobile performance)
                                     // Use requested size ONLY if it's smaller than default (e.g. for very short precise clips)
                                     // Otherwise use default chunk size.
         let mut size = if requested > 0 && requested < default_size {
@@ -444,9 +457,11 @@ impl FftNoiseGenerator {
             }
         }
 
-        // Spawn Worker
-        let (req_tx, req_rx) = bounded::<NoiseGenRequest>(1); // Capacity 1 is enough
-        let (res_tx, res_rx) = bounded::<NoiseGenResponse>(1);
+        // Spawn Worker with capacity 2 for double-buffering
+        // This allows one buffer to be in-flight while another is ready,
+        // providing more headroom for CPU scheduling variability on mobile devices.
+        let (req_tx, req_rx) = bounded::<NoiseGenRequest>(2);
+        let (res_tx, res_rx) = bounded::<NoiseGenResponse>(2);
 
         let worker = AsyncNoiseWorker {
             rx: req_rx,
@@ -502,7 +517,25 @@ impl FftNoiseGenerator {
             post_rms_accum: 0.0,
             rms_samples: 0,
             is_unmodulated: params.sweeps.is_empty(),
+
+            // Underrun recovery state
+            underrun_recovering: false,
+            underrun_fade_pos: 0,
         };
+
+        // Pre-warm the async worker by requesting the next buffer immediately.
+        // This ensures we have a buffer ready before playback starts, preventing
+        // underruns during the initial playback phase on slow mobile devices.
+        let prewarm_buffer = vec![0.0; size];
+        if gen
+            .worker_tx
+            .try_send(NoiseGenRequest {
+                buffer: prewarm_buffer,
+            })
+            .is_ok()
+        {
+            gen.worker_requested = true;
+        }
 
         gen
     }
@@ -514,9 +547,10 @@ impl FftNoiseGenerator {
     fn next(&mut self) -> f32 {
         let crossfade_len = self.crossfade_len();
 
-        // Trigger async regeneration if we are past 25% point (giving 3x more time for slow workers)
+        // Trigger async regeneration if we are past 10% point (giving 9x more time for slow workers)
+        // Earlier trigger provides more headroom on mobile devices with variable CPU scheduling.
         if !self.next_buffer_ready && !self.worker_requested {
-            if self.cursor >= self.size / 4 {
+            if self.cursor >= self.size / 10 {
                 // Swap out the old next buffer to send to worker for recycling
                 let mut buffer_to_recycle = std::mem::take(&mut self.next_buffer_storage);
                 // Ensure it's sized correctly (though it should be)
@@ -562,12 +596,19 @@ impl FftNoiseGenerator {
                 std::mem::swap(&mut self.buffer, &mut self.next_buffer_storage);
                 self.cursor = skip;
                 self.next_buffer_ready = false;
+                // Clear underrun recovery state since we have a fresh buffer
+                self.underrun_recovering = false;
+                self.underrun_fade_pos = 0;
                 // recycle old buffer next time
             } else {
                 // UNDERRUN! The worker was too slow.
-                // We MUST loop signals to avoid crashing or silence.
+                // Loop the buffer with smooth fade to avoid clicks.
                 self.cursor = 0;
-                println!("NOISE UNDERRUN! Async worker too slow. Cursor reset.");
+                self.underrun_recovering = true;
+                self.underrun_fade_pos = 0;
+                // Log silently - avoid println in audio thread for performance
+                #[cfg(debug_assertions)]
+                eprintln!("NOISE UNDERRUN! Async worker too slow. Starting smooth recovery.");
             }
         }
 
@@ -589,6 +630,21 @@ impl FftNoiseGenerator {
         } else {
             self.buffer[self.cursor]
         };
+
+        // Apply underrun recovery fade-in to prevent clicks after buffer loop
+        if self.underrun_recovering {
+            if self.underrun_fade_pos < UNDERRUN_FADE_SAMPLES {
+                // Smooth cosine fade-in
+                let t = self.underrun_fade_pos as f32 / UNDERRUN_FADE_SAMPLES as f32;
+                let fade = 0.5 * (1.0 - (std::f32::consts::PI * t).cos());
+                sample *= fade;
+                self.underrun_fade_pos += 1;
+            } else {
+                // Fade complete, resume normal playback
+                self.underrun_recovering = false;
+                self.underrun_fade_pos = 0;
+            }
+        }
 
         self.cursor += 1;
 
