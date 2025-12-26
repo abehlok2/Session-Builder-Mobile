@@ -40,6 +40,22 @@ const RENORM_HYSTERESIS_RATIO: f32 = 0.10;
 // Increased from 0.9998 for more stable volume on mobile devices.
 const GAIN_SMOOTHING_COEFF: f32 = 0.99995;
 
+// --- OLA-specific RMS compensation parameters ---
+// These are tuned for the overlap-add processing which operates at block rate.
+
+// Hysteresis threshold for OLA gain adjustments.
+// Only apply gain correction if the target differs by more than this ratio.
+// This prevents continuous micro-adjustments from block-to-block RMS variations
+// as the swept notch filter moves, which was causing volume instability.
+// More conservative than FftNoiseGenerator's 0.10 since OLA updates per-block.
+const OLA_RMS_HYSTERESIS_RATIO: f32 = 0.15;
+
+// Per-sample gain smoothing coefficient for OLA processing.
+// Faster than GAIN_SMOOTHING_COEFF because OLA needs to settle within a few blocks.
+// With 0.998, gain settles ~95% within ~1500 samples (~34ms at 44.1kHz).
+// This allows the gain to reach target before the next block's RMS calculation.
+const OLA_GAIN_SMOOTHING_COEFF: f32 = 0.998;
+
 // --- Helper Functions ---
 
 /// Scipy-compatible sawtooth with width=0.5 (triangle wave)
@@ -516,7 +532,13 @@ impl FftNoiseGenerator {
             pre_rms_accum: 0.0,
             post_rms_accum: 0.0,
             rms_samples: 0,
-            is_unmodulated: params.sweeps.is_empty(),
+            // IMPORTANT: FftNoiseGenerator's LP/HP filters are always static.
+            // The swept notch filters are handled by OLA processing, which has its
+            // own gain compensation. Setting is_unmodulated=true ensures the base
+            // noise generator uses static calibration, preventing two independent
+            // RMS tracking systems from fighting each other and causing volume
+            // instability.
+            is_unmodulated: true,
 
             // Underrun recovery state
             underrun_recovering: false,
@@ -739,9 +761,7 @@ impl FftNoiseGenerator {
 fn hann_window(size: usize) -> Vec<f32> {
     // np.hanning(N) = 0.5 - 0.5 * cos(2*pi*n/(N-1)), n = 0..N-1
     (0..size)
-        .map(|n| {
-            0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / (size as f32 - 1.0)).cos()
-        })
+        .map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / (size as f32 - 1.0)).cos())
         .collect()
 }
 
@@ -1299,21 +1319,42 @@ impl StreamingNoise {
             // Clamp is critical: with deep/high-Q cascades, tiny rms_out values can
             // create enormous gains that produce spikes. Those spikes poison peak
             // calibration and make the stream end up extremely quiet.
-            let target_gain_l = if rms_l > 1e-8 {
+            let raw_target_l = if rms_l > 1e-8 {
                 (rms_in / rms_l).clamp(0.25, 16.0)
             } else {
                 self.ola.smoothed_gain_l
             };
-            let target_gain_r = if rms_r > 1e-8 {
+            let raw_target_r = if rms_r > 1e-8 {
                 (rms_in / rms_r).clamp(0.25, 16.0)
             } else {
                 self.ola.smoothed_gain_r
             };
 
+            // Apply hysteresis: only update target if the change is significant.
+            // This prevents continuous micro-adjustments from block-to-block RMS
+            // variations as the swept notch filter moves, which was causing
+            // volume instability and "pumping" artifacts.
+            let ratio_diff_l = (raw_target_l - self.ola.smoothed_gain_l).abs()
+                / self.ola.smoothed_gain_l.max(0.01);
+            let ratio_diff_r = (raw_target_r - self.ola.smoothed_gain_r).abs()
+                / self.ola.smoothed_gain_r.max(0.01);
+
+            let target_gain_l = if ratio_diff_l > OLA_RMS_HYSTERESIS_RATIO {
+                raw_target_l
+            } else {
+                self.ola.smoothed_gain_l // Keep current, don't chase small variations
+            };
+            let target_gain_r = if ratio_diff_r > OLA_RMS_HYSTERESIS_RATIO {
+                raw_target_r
+            } else {
+                self.ola.smoothed_gain_r
+            };
+
             // Apply per-sample gain smoothing to prevent clicking from abrupt gain changes.
-            // Use a smoothing coefficient that transitions over the block length.
-            // This is more aggressive than the post-filter renorm since blocks are larger.
-            let smooth_coeff = GAIN_SMOOTHING_COEFF;
+            // Use the OLA-specific faster smoothing coefficient so gain can settle
+            // before the next block is processed. This prevents the "hunting" behavior
+            // where smoothed_gain oscillates around a varying target.
+            let smooth_coeff = OLA_GAIN_SMOOTHING_COEFF;
             let one_minus_coeff = 1.0 - smooth_coeff;
 
             for sample in self.ola.block_l.iter_mut() {
