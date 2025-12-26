@@ -93,9 +93,7 @@ fn spawn_audio_worker<C>(
 
             if producer.occupied_len() < min_samples {
                 let target = max_samples.min(producer.capacity().get());
-                while producer.occupied_len() < target
-                    && !stop_flag.load(Ordering::Relaxed)
-                {
+                while producer.occupied_len() < target && !stop_flag.load(Ordering::Relaxed) {
                     let vacant = producer.vacant_len();
                     if vacant == 0 {
                         break;
@@ -254,7 +252,7 @@ pub fn run_audio_stream<C>(
     }
 
     let channels = 2usize;
-    let sample_rate = scheduler.sample_rate;
+    let sample_rate = scheduler.sample_rate as u32;
     let max_samples = samples_for_seconds(sample_rate, AUDIO_RING_MAX_SECONDS, channels)
         .max(AUDIO_WORKER_BLOCK_FRAMES * channels);
     let rb = HeapRb::<f32>::new(max_samples);
@@ -276,12 +274,7 @@ pub fn run_audio_stream<C>(
     spawn_audio_telemetry_thread(stop_rx.clone(), telemetry.clone(), "CPAL");
     let mut last_sample = 0.0f32;
     let audio_callback = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        mix_from_ringbuffer(
-            &mut consumer,
-            data,
-            &mut last_sample,
-            low_watermark_samples,
-        );
+        mix_from_ringbuffer(&mut consumer, data, &mut last_sample, low_watermark_samples);
         #[cfg(feature = "audio-telemetry")]
         telemetry.record_block(data);
     };
@@ -366,7 +359,7 @@ fn run_audio_stream_android<C>(
     log::error!("REALTIME_BACKEND: Starting Oboe stream (Android specialized)...");
 
     let channels = 2usize;
-    let sample_rate = scheduler.sample_rate;
+    let sample_rate = scheduler.sample_rate as u32;
     let max_samples = samples_for_seconds(sample_rate, AUDIO_RING_MAX_SECONDS, channels)
         .max(AUDIO_WORKER_BLOCK_FRAMES * channels);
     let rb = HeapRb::<f32>::new(max_samples);
