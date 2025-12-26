@@ -47,14 +47,14 @@ const GAIN_SMOOTHING_COEFF: f32 = 0.99995;
 // Only apply gain correction if the target differs by more than this ratio.
 // This prevents continuous micro-adjustments from block-to-block RMS variations
 // as the swept notch filter moves, which was causing volume instability.
-// More conservative than FftNoiseGenerator's 0.10 since OLA updates per-block.
-const OLA_RMS_HYSTERESIS_RATIO: f32 = 0.15;
+// Set to 0.20 (20%) to be conservative and avoid chasing small RMS fluctuations.
+const OLA_RMS_HYSTERESIS_RATIO: f32 = 0.20;
 
 // Per-sample gain smoothing coefficient for OLA processing.
-// Faster than GAIN_SMOOTHING_COEFF because OLA needs to settle within a few blocks.
-// With 0.998, gain settles ~95% within ~1500 samples (~34ms at 44.1kHz).
-// This allows the gain to reach target before the next block's RMS calculation.
-const OLA_GAIN_SMOOTHING_COEFF: f32 = 0.998;
+// Moderate value between the very slow 0.99995 and aggressive 0.998.
+// With 0.9995, gain settles ~95% within ~6000 samples (~136ms at 44.1kHz).
+// This provides smooth transitions while still responding to real changes.
+const OLA_GAIN_SMOOTHING_COEFF: f32 = 0.9995;
 
 // --- Helper Functions ---
 
@@ -532,13 +532,10 @@ impl FftNoiseGenerator {
             pre_rms_accum: 0.0,
             post_rms_accum: 0.0,
             rms_samples: 0,
-            // IMPORTANT: FftNoiseGenerator's LP/HP filters are always static.
-            // The swept notch filters are handled by OLA processing, which has its
-            // own gain compensation. Setting is_unmodulated=true ensures the base
-            // noise generator uses static calibration, preventing two independent
-            // RMS tracking systems from fighting each other and causing volume
-            // instability.
-            is_unmodulated: true,
+            // Use static calibration only when there are no sweeps (unmodulated noise).
+            // When sweeps exist, the OLA processing handles gain compensation with
+            // hysteresis to prevent volume instability.
+            is_unmodulated: params.sweeps.is_empty(),
 
             // Underrun recovery state
             underrun_recovering: false,

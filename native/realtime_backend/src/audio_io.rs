@@ -254,7 +254,7 @@ pub fn run_audio_stream<C>(
     }
 
     let channels = 2usize;
-    let sample_rate = scheduler.sample_rate;
+    let sample_rate = scheduler.sample_rate as u32;
     let max_samples = samples_for_seconds(sample_rate, AUDIO_RING_MAX_SECONDS, channels)
         .max(AUDIO_WORKER_BLOCK_FRAMES * channels);
     let rb = HeapRb::<f32>::new(max_samples);
@@ -366,7 +366,7 @@ fn run_audio_stream_android<C>(
     log::error!("REALTIME_BACKEND: Starting Oboe stream (Android specialized)...");
 
     let channels = 2usize;
-    let sample_rate = scheduler.sample_rate;
+    let sample_rate = scheduler.sample_rate as u32;
     let max_samples = samples_for_seconds(sample_rate, AUDIO_RING_MAX_SECONDS, channels)
         .max(AUDIO_WORKER_BLOCK_FRAMES * channels);
     let rb = HeapRb::<f32>::new(max_samples);
