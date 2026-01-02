@@ -54,8 +54,11 @@ fun presetForType(type: String): NoisePreset? {
 
 fun resolvedNoiseName(params: NoiseParams): String {
     val nameElement = params.noise_parameters["name"]
-    if (nameElement != null && nameElement.isJsonPrimitive && nameElement.asJsonPrimitive.isString) {
-        return nameElement.asString
+    if (nameElement != null && nameElement.isJsonPrimitive()) {
+        val primitive = nameElement.asJsonPrimitive
+        if (primitive.isString) {
+            return primitive.asString
+        }
     }
     return "pink"
 }
