@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/data/presets_repository.dart';
 import 'package:session_builder_mobile/services/audio_handler.dart';
 import 'package:session_builder_mobile/services/audio_session_service.dart';
-import 'package:session_builder_mobile/src/rust/mobile_api.dart';
+import 'package:session_builder_mobile/src/kotlin/mobile_api.dart';
 import 'package:session_builder_mobile/ui/screens/home_screen.dart';
 import 'package:session_builder_mobile/ui/theme.dart';
 
