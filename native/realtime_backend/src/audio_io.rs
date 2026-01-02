@@ -24,9 +24,9 @@ pub struct PlaybackState {
     pub is_paused: Arc<AtomicBool>,
 }
 
-const AUDIO_RING_MIN_SECONDS: f32 = 0.5;
-const AUDIO_RING_MAX_SECONDS: f32 = 2.0;
-const AUDIO_WORKER_BLOCK_FRAMES: usize = 512;
+const AUDIO_RING_MIN_SECONDS: f32 = 1.0;  // Increased from 0.5 for mobile stability
+const AUDIO_RING_MAX_SECONDS: f32 = 3.0;  // Increased from 2.0 for mobile stability
+const AUDIO_WORKER_BLOCK_FRAMES: usize = 1024;  // Increased from 512 to reduce per-block overhead
 
 fn samples_for_seconds(sample_rate: u32, seconds: f32, channels: usize) -> usize {
     ((sample_rate as f32 * seconds).ceil() as usize).saturating_mul(channels)
@@ -51,6 +51,7 @@ fn mix_from_ringbuffer<C: Consumer<Item = f32>>(
         *last_sample = data[copied - 1];
     }
     if copied < data.len() {
+        log::warn!("Audio underrun: requested {}, got {}", data.len(), copied);
         for sample in &mut data[copied..] {
             *sample = *last_sample;
         }
@@ -116,7 +117,9 @@ fn spawn_audio_worker<C>(
                     update_playback_state(&playback_state, &scheduler);
                 }
             } else {
-                thread::sleep(Duration::from_millis(5));
+                // Use yield instead of sleep for better responsiveness on mobile
+                // where thread scheduling variability can cause underruns with 5ms sleep
+                thread::yield_now();
             }
         }
     });
@@ -339,13 +342,14 @@ impl AudioOutputCallback for AndroidAudioCallback {
 }
 
 /// Buffer size for Android audio output (in frames).
-/// Using 2048 frames at 44100Hz = ~46ms latency.
+/// Using 4096 frames at 44100Hz = ~93ms latency.
 /// This provides a more stable buffer for continuous playback,
 /// preventing choppy/static audio on devices like Galaxy S21.
 /// The larger buffer helps compensate for CPU scheduling variability
 /// on mobile devices which can cause buffer underruns.
+/// Increased from 2048 to 4096 to fix flutter/stuttering issues.
 #[cfg(target_os = "android")]
-const ANDROID_BUFFER_FRAMES: i32 = 2048;
+const ANDROID_BUFFER_FRAMES: i32 = 4096;
 
 #[cfg(target_os = "android")]
 fn run_audio_stream_android<C>(
@@ -398,7 +402,7 @@ fn run_audio_stream_android<C>(
         .set_channel_count::<Stereo>()
         .set_sample_rate(44100)
         .set_frames_per_callback(ANDROID_BUFFER_FRAMES)
-        .set_buffer_capacity_in_frames(ANDROID_BUFFER_FRAMES * 4)
+        .set_buffer_capacity_in_frames(ANDROID_BUFFER_FRAMES * 8)  // Increased from * 4 for more headroom
         .set_callback(callback)
         .open_stream()
         .expect("Failed to open Oboe stream");

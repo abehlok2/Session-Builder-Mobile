@@ -241,12 +241,21 @@ impl AsyncNoiseWorker {
     fn run(mut self) {
         // Wait for requests
         while let Ok(mut req) = self.rx.recv() {
-            self.regenerate_into(&mut req.buffer);
+            // Wrap regeneration in panic handler to prevent worker thread crashes
+            // from killing the entire audio pipeline
+            if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.regenerate_into(&mut req.buffer);
+            })) {
+                log::error!("FFT worker panic: {:?}", e);
+                // Fill buffer with zeros to avoid garbage audio
+                req.buffer.fill(0.0);
+            }
             let _ = self.tx.send(NoiseGenResponse {
                 buffer: req.buffer,
                 target_rms: self.target_rms,
             });
         }
+        log::error!("FFT worker channel closed - thread exiting");
     }
 
     fn regenerate_into(&mut self, target: &mut Vec<f32>) {
@@ -511,11 +520,17 @@ impl FftNoiseGenerator {
         // Block wait for initial buffer
         let initial_res = res_rx.recv().expect("Worker died immediately");
 
+        // Request and wait for second buffer to ensure pipeline is primed.
+        // This prevents underruns during initial playback on slow mobile devices.
+        let second_buffer = vec![0.0; size];
+        let _ = req_tx.send(NoiseGenRequest { buffer: second_buffer });
+        let second_res = res_rx.recv().expect("Worker died on second buffer");
+
         let mut gen = Self {
             buffer: initial_res.buffer,
-            // Pre-allocate next buffer storage
-            next_buffer_storage: vec![0.0; size],
-            next_buffer_ready: false,
+            // Pre-fill next buffer storage with the second buffer for immediate availability
+            next_buffer_storage: second_res.buffer,
+            next_buffer_ready: true,  // Mark as ready since we have a valid second buffer
             cursor: 0,
             size,
             worker_tx: req_tx,
@@ -545,19 +560,9 @@ impl FftNoiseGenerator {
             underrun_fade_pos: 0,
         };
 
-        // Pre-warm the async worker by requesting the next buffer immediately.
-        // This ensures we have a buffer ready before playback starts, preventing
-        // underruns during the initial playback phase on slow mobile devices.
-        let prewarm_buffer = vec![0.0; size];
-        if gen
-            .worker_tx
-            .try_send(NoiseGenRequest {
-                buffer: prewarm_buffer,
-            })
-            .is_ok()
-        {
-            gen.worker_requested = true;
-        }
+        // Note: Pipeline is now pre-filled with two buffers (buffer + next_buffer_storage)
+        // so we don't need additional prewarm. The 50% early trigger in next() will
+        // request the third buffer with plenty of time before it's needed.
 
         gen
     }
@@ -569,10 +574,11 @@ impl FftNoiseGenerator {
     fn next(&mut self) -> f32 {
         let crossfade_len = self.crossfade_len();
 
-        // Trigger async regeneration if we are past 10% point (giving 9x more time for slow workers)
+        // Trigger async regeneration at 50% point (giving 2x the buffer time for slow workers)
         // Earlier trigger provides more headroom on mobile devices with variable CPU scheduling.
+        // Changed from 5% to 50% to prevent underruns on slower mobile devices.
         if !self.next_buffer_ready && !self.worker_requested {
-            let early_trigger = self.crossfade_len().min(4096); // small guard region
+            let early_trigger = self.size / 2;  // Trigger at 50% instead of near the end
             if self.cursor >= early_trigger {
                 // Swap out the old next buffer to send to worker for recycling
                 let mut buffer_to_recycle = std::mem::take(&mut self.next_buffer_storage);
