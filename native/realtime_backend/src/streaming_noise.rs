@@ -166,15 +166,7 @@ fn biquad_block(block: &mut [f64], coeffs: &Coeffs, st: &mut BiquadState64) {
     st.z2 = z2;
 }
 
-/// Coefficient update interval for time-varying biquad filter.
-/// Only recalculate expensive trig-heavy notch_coeffs_f64() every N samples.
-/// This provides ~16x CPU reduction for the filter coefficient calculations
-/// while maintaining smooth filter sweeps (at 44.1kHz, 16 samples = 0.36ms).
-const COEFF_UPDATE_INTERVAL: usize = 16;
-
 /// Apply a biquad with time-varying coefficients per sample while keeping state continuous.
-/// Optimized to only recalculate coefficients every COEFF_UPDATE_INTERVAL samples,
-/// providing ~16x CPU reduction for the expensive notch_coeffs_f64() calls.
 fn biquad_time_varying_block(
     block: &mut [f32],
     freq_series: &[f32],
@@ -185,11 +177,6 @@ fn biquad_time_varying_block(
 ) {
     let n = block.len();
     let max_stage = state.len();
-
-    // Cached coefficients - only recalculated every COEFF_UPDATE_INTERVAL samples
-    let mut cached_coeffs: Option<Coeffs> = None;
-    let mut cached_casc: usize = 1;
-
     for i in 0..n {
         let mut casc = casc_counts[i];
         if casc < 1 {
@@ -203,24 +190,10 @@ fn biquad_time_varying_block(
             continue;
         }
         let q = (q_series[i] as f64).max(1e-6);
-
-        // Only recalculate coefficients at intervals or when we don't have cached values.
-        // This provides ~16x CPU reduction for the expensive trig calculations in notch_coeffs_f64().
-        let coeffs = if i % COEFF_UPDATE_INTERVAL == 0 || cached_coeffs.is_none() {
-            let new_coeffs = notch_coeffs_f64(freq, q, sample_rate);
-            cached_coeffs = Some(new_coeffs.clone());
-            cached_casc = casc;
-            new_coeffs
-        } else {
-            // Reuse cached coefficients for intermediate samples
-            cached_coeffs.clone().unwrap()
-        };
-
-        // Use the current cascade count (may differ slightly from when coeffs were calculated)
-        let effective_casc = casc.min(cached_casc.max(casc));
+        let coeffs = notch_coeffs_f64(freq, q, sample_rate);
 
         let mut sample = block[i] as f64;
-        for stage in 0..effective_casc {
+        for stage in 0..casc {
             let st = &mut state[stage];
             let out = sample * coeffs.b0 + st.z1;
             st.z1 = sample * coeffs.b1 - out * coeffs.a1 + st.z2;
@@ -500,12 +473,11 @@ impl FftNoiseGenerator {
             }
         }
 
-        // Spawn Worker with capacity 4 for deeper buffering
-        // Increased from 2 to 4 to provide more headroom for CPU scheduling
-        // variability on mobile devices. This allows multiple buffers to be
-        // in-flight, reducing the chance of underruns during CPU spikes.
-        let (req_tx, req_rx) = bounded::<NoiseGenRequest>(4);
-        let (res_tx, res_rx) = bounded::<NoiseGenResponse>(4);
+        // Spawn Worker with capacity 2 for double-buffering
+        // This allows one buffer to be in-flight while another is ready,
+        // providing more headroom for CPU scheduling variability on mobile devices.
+        let (req_tx, req_rx) = bounded::<NoiseGenRequest>(2);
+        let (res_tx, res_rx) = bounded::<NoiseGenResponse>(2);
 
         let worker = AsyncNoiseWorker {
             rx: req_rx,
@@ -573,21 +545,18 @@ impl FftNoiseGenerator {
             underrun_fade_pos: 0,
         };
 
-        // Pre-warm the async worker by requesting 2 buffers immediately.
-        // This ensures we have buffers ready before playback starts, preventing
+        // Pre-warm the async worker by requesting the next buffer immediately.
+        // This ensures we have a buffer ready before playback starts, preventing
         // underruns during the initial playback phase on slow mobile devices.
-        // Increased from 1 to 2 buffers for deeper pipeline.
-        for _ in 0..2 {
-            let prewarm_buffer = vec![0.0; size];
-            if gen
-                .worker_tx
-                .try_send(NoiseGenRequest {
-                    buffer: prewarm_buffer,
-                })
-                .is_ok()
-            {
-                gen.worker_requested = true;
-            }
+        let prewarm_buffer = vec![0.0; size];
+        if gen
+            .worker_tx
+            .try_send(NoiseGenRequest {
+                buffer: prewarm_buffer,
+            })
+            .is_ok()
+        {
+            gen.worker_requested = true;
         }
 
         gen
@@ -600,13 +569,10 @@ impl FftNoiseGenerator {
     fn next(&mut self) -> f32 {
         let crossfade_len = self.crossfade_len();
 
-        // Trigger async regeneration at 5% of buffer (self.size / 20).
-        // This gives the worker much more time to complete compared to the old
-        // crossfade_len trigger point. With a 32768 sample buffer at 44.1kHz,
-        // this triggers at ~1638 samples, giving the worker ~700ms to complete
-        // instead of waiting until the last ~46ms (crossfade_len).
+        // Trigger async regeneration if we are past 10% point (giving 9x more time for slow workers)
+        // Earlier trigger provides more headroom on mobile devices with variable CPU scheduling.
         if !self.next_buffer_ready && !self.worker_requested {
-            let early_trigger = self.size / 20; // 5% of buffer
+            let early_trigger = self.crossfade_len().min(4096); // small guard region
             if self.cursor >= early_trigger {
                 // Swap out the old next buffer to send to worker for recycling
                 let mut buffer_to_recycle = std::mem::take(&mut self.next_buffer_storage);
@@ -965,10 +931,6 @@ pub struct StreamingNoise {
     // Mode flags
     transition: bool,
 
-    // Simple mode flag: when true, bypass OLA entirely for static noise.
-    // This prevents the ~50% volume drop from Hann windowing without RMS compensation.
-    use_simple_mode: bool,
-
     // FFT Generator for all noise modes
     fft_gen: FftNoiseGenerator,
 
@@ -1049,9 +1011,6 @@ impl StreamingNoise {
             })
             .collect();
 
-        // Determine if we should use simple mode (bypass OLA for static noise)
-        let use_simple_mode = sweep_params.is_empty();
-
         let mut gen = Self {
             sample_rate: sample_rate_f,
             duration_samples,
@@ -1075,21 +1034,28 @@ impl StreamingNoise {
             sweep_params,
             sweep_runtime,
             transition: params.transition,
-            use_simple_mode,
             fft_gen: FftNoiseGenerator::new(params, sample_rate_f),
             ola: OlaState::new(),
             total_samples_output: 0,
         };
 
         // --- WARMUP / CALIBRATION LOOP ---
-        // For ALL noise types, we run the warmup loop to ensure the FFT generator's
-        // renormalization has "latched" onto the correct gain before outputting real audio.
-        // This prevents a "quiet start" or fade-in artifact.
-        // Previously this only ran for static noise, but swept noise also benefits from
-        // having a stable starting point.
-        for _ in 0..RENORM_WINDOW {
-            // discard output, just warming up state
-            gen.fft_gen.next();
+        // For unmodulated noise, we rely on the first renormalization calculation
+        // to set the static makeup gain. We need to run enough samples through
+        // the generator here so that it has "latched" onto the correct gain
+        // *before* we start outputting real audio. This prevents a "quiet start"
+        // or fade-in artifact.
+        if params.sweeps.is_empty() {
+            // Run exactly one window's worth of samples to trigger the first calc
+            // RENORM_WINDOW is currently 8192
+            for _ in 0..RENORM_WINDOW {
+                // discard output, just warming up state
+                gen.fft_gen.next();
+            }
+            // Reset state that shouldn't persist (optional, but good practice)
+            // Actually, we WANT to keep the renorm_gain, so we don't reset that.
+            // But we might want to reset the cursor or buffer if we wanted to align things,
+            // but for noise it doesn't matter.
         }
 
         gen
@@ -1430,20 +1396,6 @@ impl StreamingNoise {
     /// Generate stereo output using Python-compatible overlap-add processing
     pub fn generate(&mut self, out: &mut [f32]) {
         let frames = out.len() / 2;
-
-        // Simple mode bypass: for static noise (no sweeps), skip OLA entirely.
-        // This avoids the ~50% volume drop from Hann windowing without RMS compensation.
-        // Static noise doesn't need OLA processing since there are no swept filters.
-        if self.use_simple_mode {
-            for i in 0..frames {
-                let sample = self.next_base();
-                out[i * 2] = sample;
-                out[i * 2 + 1] = sample;
-            }
-            self.total_samples_output += frames;
-            return;
-        }
-
         let mut frames_written = 0;
         let acc_size = self.ola.out_acc_l.len();
 
