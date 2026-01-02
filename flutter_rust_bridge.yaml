@@ -1,3 +1,0 @@
-rust_input: crate::mobile_api
-rust_root: native/realtime_backend/
-dart_output: lib/src/rust
