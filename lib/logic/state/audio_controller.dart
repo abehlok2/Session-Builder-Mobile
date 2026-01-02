@@ -1,5 +1,6 @@
-import 'package:session_builder_mobile/src/rust/mobile_api.dart' hide setVolume;
-import 'package:session_builder_mobile/src/rust/mobile_api.dart'
+import 'package:session_builder_mobile/src/kotlin/mobile_api.dart'
+    hide setVolume;
+import 'package:session_builder_mobile/src/kotlin/mobile_api.dart'
     as mobile_api
     show setVolume;
 

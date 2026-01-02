@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:session_builder_mobile/data/presets_repository.dart';
 import 'package:session_builder_mobile/logic/audio_helpers.dart';
 import 'package:session_builder_mobile/logic/state/session_editor_provider.dart';
-import 'package:session_builder_mobile/src/rust/mobile_api.dart';
+import 'package:session_builder_mobile/src/kotlin/mobile_api.dart';
 
 class StepBuilderScreen extends ConsumerStatefulWidget {
   final Map<String, dynamic>? initialStep;
