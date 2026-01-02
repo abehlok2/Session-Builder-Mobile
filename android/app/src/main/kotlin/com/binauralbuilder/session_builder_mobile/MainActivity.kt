@@ -11,7 +11,7 @@ class MainActivity : AudioServiceActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "init" -> {
@@ -69,6 +69,42 @@ class MainActivity : AudioServiceActivity() {
                 "getCurrentPosition" -> {
                     val pos = MobileApi.getCurrentPosition()
                     result.success(pos.toDouble())
+                }
+                "getPlaybackPosition" -> {
+                    val pos = MobileApi.getCurrentPosition()
+                    result.success(pos.toDouble())
+                }
+                "getElapsedSamples" -> {
+                    val samples = MobileApi.getElapsedSamples()
+                    result.success(samples)
+                }
+                "getCurrentStep" -> {
+                    val step = MobileApi.getCurrentStep()
+                    result.success(step)
+                }
+                "getIsPaused" -> {
+                    result.success(MobileApi.isPaused())
+                }
+                "isAudioPlaying" -> {
+                    result.success(MobileApi.isAudioPlaying())
+                }
+                "getSampleRate" -> {
+                    result.success(MobileApi.getSampleRate())
+                }
+                "getPlaybackStatus" -> {
+                    val status = MobileApi.getPlaybackStatus()
+                    if (status == null) {
+                        result.success(null)
+                    } else {
+                        result.success(
+                            mapOf(
+                                "positionSeconds" to status.positionSeconds,
+                                "currentStep" to status.currentStep,
+                                "isPaused" to status.isPaused,
+                                "sampleRate" to status.sampleRate
+                            )
+                        )
+                    }
                 }
                 else -> result.notImplemented()
             }
