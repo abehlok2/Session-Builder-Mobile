@@ -18,6 +18,16 @@ enum class CrossfadeCurve {
     }
 }
 
+private fun stepsHaveContinuousVoices(a: StepData, b: StepData): Boolean {
+    if (a.voices.size != b.voices.size) return false
+    return a.voices.zip(b.voices).all { (va, vb) ->
+        va.synthFunctionName == vb.synthFunctionName &&
+            va.params == vb.params &&
+            va.isTransition == vb.isTransition &&
+            va.voiceType.equals(vb.voiceType, ignoreCase = true)
+    }
+}
+
 class TrackScheduler(
     var track: TrackData,
     val sampleRate: Float
@@ -50,9 +60,9 @@ class TrackScheduler(
     private var backgroundNoise: BackgroundNoise? = null
     
     // Scratch buffers
-    private val scratch = FloatArray(4096)
-    private val noiseScratch = FloatArray(4096)
-    private val voiceTemp = FloatArray(4096)
+    private var scratch = FloatArray(4096)
+    private var noiseScratch = FloatArray(4096)
+    private var voiceTemp = FloatArray(4096)
     
     // Phase continuity
     private val accumulatedPhases = ArrayList<Pair<Float, Float>>()
@@ -63,38 +73,64 @@ class TrackScheduler(
     }
 
     fun updateTrack(newTrack: TrackData) {
-        // Full update logic (simplified compared to Rust optimization for now)
+        val oldNoiseCfg = track.backgroundNoise
+        val newNoiseCfg = newTrack.backgroundNoise
+        val canReuseNoise = backgroundNoise != null && noiseConfigsCompatible(oldNoiseCfg, newNoiseCfg)
         this.track = newTrack
         
         // Update noise
-        if (newTrack.backgroundNoise != null) {
-            // Check if we can reuse existing noise generator (omitted complexity, just recreate for now)
-            val noiseCfg = newTrack.backgroundNoise!!
-            val params = noiseCfg.params
+        if (newNoiseCfg != null && newNoiseCfg.params != null) {
+            val params = newNoiseCfg.params
+            var effectiveParams = params.copy(
+                start_time = newNoiseCfg.startTime.toFloat(),
+                fade_in = newNoiseCfg.fadeIn.toFloat(),
+                fade_out = newNoiseCfg.fadeOut.toFloat()
+            )
+            if (newNoiseCfg.ampEnvelope.isNotEmpty()) {
+                effectiveParams = effectiveParams.copy(amp_envelope = newNoiseCfg.ampEnvelope)
+            }
 
-            if (params != null) {
-                // Apply overrides using copy
-                var effectiveParams = params.copy(
-                    start_time = noiseCfg.startTime.toFloat(),
-                    fade_in = noiseCfg.fadeIn.toFloat(),
-                    fade_out = noiseCfg.fadeOut.toFloat()
-                )
+            val startSample = (effectiveParams.start_time * sampleRate).toInt()
+            val fadeInSamples = (effectiveParams.fade_in * sampleRate).toInt()
+            val fadeOutSamples = (effectiveParams.fade_out * sampleRate).toInt()
+            val durationSamples = if (effectiveParams.duration_seconds > 0f) {
+                (effectiveParams.duration_seconds * sampleRate).toInt()
+            } else {
+                null
+            }
+            val envPoints = effectiveParams.amp_envelope.map { pair ->
+                val t = pair.getOrNull(0)?.coerceAtLeast(0f) ?: 0f
+                val a = pair.getOrNull(1) ?: 1.0f
+                (t * sampleRate).toInt() to a
+            }
+            val gain = newNoiseCfg.amp * noiseGain
 
-                if (noiseCfg.ampEnvelope.isNotEmpty()) {
-                    effectiveParams = effectiveParams.copy(amp_envelope = noiseCfg.ampEnvelope)
+            if (canReuseNoise && backgroundNoise != null) {
+                backgroundNoise?.gain = gain
+                val updated = backgroundNoise?.updateRealtimeParams(effectiveParams) ?: false
+                if (!updated) {
+                    backgroundNoise = BackgroundNoise(
+                        StreamingNoise(effectiveParams, sampleRate),
+                        gain,
+                        startSample,
+                        fadeInSamples,
+                        fadeOutSamples,
+                        envPoints,
+                        durationSamples,
+                        effectiveParams
+                    )
                 }
-
+            } else {
                 backgroundNoise = BackgroundNoise(
                     StreamingNoise(effectiveParams, sampleRate),
-                    noiseCfg.amp * noiseGain,
-                    (noiseCfg.startTime * sampleRate).toInt(),
-                    (noiseCfg.fadeIn * sampleRate).toInt(),
-                    (noiseCfg.fadeOut * sampleRate).toInt(),
-                    noiseCfg.ampEnvelope, 
-                    if (params.duration_seconds > 0f) (params.duration_seconds * sampleRate).toInt() else null
+                    gain,
+                    startSample,
+                    fadeInSamples,
+                    fadeOutSamples,
+                    envPoints,
+                    durationSamples,
+                    effectiveParams
                 )
-            } else {
-                backgroundNoise = null
             }
         } else {
             backgroundNoise = null
@@ -105,11 +141,7 @@ class TrackScheduler(
         val curveStr = newTrack.globalSettings.crossfadeCurve
         crossfadeCurve = if (curveStr == "equal_power") CrossfadeCurve.EqualPower else CrossfadeCurve.Linear
         
-        // If we are just starting, ensure we seek to 0 or appropriate point
-        // But if updating live, we might want to preserve position.
-        // For simplicity, we assume this is called on init or track change reset.
-        // If we need seamless update, we would need the "realtime safe" check logic from Rust.
-        // Implementing basic seek to 0 for initial version unless explicit seek command used.
+        // Track updates preserve current playback position unless explicitly seeked elsewhere.
     }
     
     fun seekTo(timeSeconds: Float) {
@@ -147,14 +179,12 @@ class TrackScheduler(
              val startSample = noise.startSample
              if (absoluteSample > startSample) {
                  val local = absoluteSample - startSample
-                 // noise.generator.skipSamples(local.toInt()) // StreamingNoise needs skipSamples
-                 // Basic workaround: generate into void
-                 val toSkip = local.toInt()
-                 // Don't actually generate noise we don't hear if possible, or just reset generator phase?
-                 // StreamingNoise logic is stochastic + FFT, so "state" matters for continuity but "seeking" random noise is loose.
-                 // We will skip strict seeking logic for noise for now.
-                 noise.playbackSample = toSkip
-                 noise.started = true
+                 val skip = noise.durationSamples?.let { min(local.toInt(), it) } ?: local.toInt()
+                 if (skip > 0) {
+                     noise.generator.skipSamples(skip)
+                     noise.playbackSample = skip
+                     noise.started = true
+                 }
              }
         }
     }
@@ -170,15 +200,8 @@ class TrackScheduler(
         if (activeVoices.isEmpty() && !crossfadeActive) {
             val step = track.steps[currentStepIndex]
             val voices = createVoicesForStep(step)
+            applyPhasesToVoices(accumulatedPhases, voices)
             activeVoices.addAll(voices)
-            
-            // Apply seeking offset if 'currentSample' > 0 (e.g. after seek)
-            // But 'createVoice' initializes state to 0. We'd need to advance them.
-            // Complex logic. Rust does it by passing state? No, Rust relies on "process" to advance.
-            // If we seeked, we need to advance voices...
-            // Implementation shortcut: For now, if currentSample > 0, we might lose precise alignment 
-            // of internal oscillators unless we specifically "fast forward" the voice.
-            // A proper `Voice.seek(sample)` is ideal, or just accept phase reset on hard seek.
         }
 
         // Check for crossfade start
@@ -190,30 +213,32 @@ class TrackScheduler(
             if (currentSample >= stepSamples - fadeLen) {
                 // Start crossfade
                 val nextStep = track.steps[currentStepIndex + 1]
-                // Only if discontinuous? Rust check: steps_have_continuous_voices
-                // Assuming always crossfade for now for simplicity
-                val nextVoicesList = createVoicesForStep(nextStep)
-                nextVoices.clear()
-                nextVoices.addAll(nextVoicesList)
-                
-                crossfadeActive = true
-                nextStepSample = 0
-                val nextStepSamples = (nextStep.duration * sampleRate).toLong()
-                currentCrossfadeSamples = min(fadeLen, min(stepSamples, nextStepSamples)).toInt()
-                
-                // Build envelope
-                if (crossfadeEnvelope.size < currentCrossfadeSamples) {
-                    crossfadeEnvelope = FloatArray(currentCrossfadeSamples)
-                }
-                for (i in 0 until currentCrossfadeSamples) {
-                    crossfadeEnvelope[i] = i.toFloat() / (currentCrossfadeSamples - 1).toFloat()
+                if (!stepsHaveContinuousVoices(step, nextStep)) {
+                    accumulatedPhases = ArrayList(extractPhasesFromVoices(activeVoices))
+                    val nextVoicesList = createVoicesForStep(nextStep)
+                    applyPhasesToVoices(accumulatedPhases, nextVoicesList)
+                    nextVoices.clear()
+                    nextVoices.addAll(nextVoicesList)
+
+                    crossfadeActive = true
+                    nextStepSample = 0
+                    val nextStepSamples = (nextStep.duration * sampleRate).toLong()
+                    currentCrossfadeSamples = min(fadeLen, min(stepSamples, nextStepSamples)).toInt()
+
+                    if (currentCrossfadeSamples <= 1) {
+                        crossfadeEnvelope = FloatArray(currentCrossfadeSamples)
+                    } else {
+                        crossfadeEnvelope = FloatArray(currentCrossfadeSamples) { i ->
+                            i.toFloat() / (currentCrossfadeSamples - 1).toFloat()
+                        }
+                    }
                 }
             }
         }
 
         if (crossfadeActive) {
-            ensureLayout(crossfadePrev, buffer.size)
-            ensureLayout(crossfadeNext, buffer.size)
+            crossfadePrev = ensureLayout(crossfadePrev, buffer.size)
+            crossfadeNext = ensureLayout(crossfadeNext, buffer.size)
             
             val prevBuf = crossfadePrev
             val nextBuf = crossfadeNext
@@ -245,10 +270,11 @@ class TrackScheduler(
             currentSample += frameCount
             nextStepSample += frameCount
             
-            // Cleanup finished voices
-            activeVoices.removeAll { it.kind.isFinished() } // Note: Logic slightly flawed during crossfade, we should keep them alive? No process calls keep them alive.
+            activeVoices.removeAll { it.kind.isFinished() }
+            nextVoices.removeAll { it.kind.isFinished() }
             
             if (nextStepSample >= currentCrossfadeSamples) {
+                accumulatedPhases = ArrayList(extractPhasesFromVoices(nextVoices))
                 currentStepIndex++
                 currentSample = nextStepSample.toLong()
                 nextStepSample = 0
@@ -268,45 +294,52 @@ class TrackScheduler(
             
             val stepSamples = (step.duration * sampleRate).toLong()
             if (currentSample >= stepSamples) {
+                accumulatedPhases = ArrayList(extractPhasesFromVoices(activeVoices))
                 currentStepIndex++
                 currentSample = 0
                 activeVoices.clear()
             }
         }
         
-        // Master Gain
+        if (voiceGain != 1.0f) {
+            for (i in buffer.indices) {
+                buffer[i] *= voiceGain
+            }
+        }
+
+        if (noiseScratch.size < buffer.size) {
+            noiseScratch = FloatArray(buffer.size)
+        }
+        backgroundNoise?.mixInto(buffer, noiseScratch, absoluteSample.toInt())
+
         if (masterGain != 1.0f) {
             for (i in buffer.indices) {
                 buffer[i] *= masterGain
             }
         }
-        
+
         absoluteSample += frameCount
-        
-        // Detailed Background Noise mixing
-        backgroundNoise?.mixInto(buffer, noiseScratch, absoluteSample.toInt())
     }
 
     private fun ensureLayout(arr: FloatArray, size: Int): FloatArray {
        if (arr.size < size) return FloatArray(size) // Realloc logic
        return arr
     }
-    
-    // Helper to resize scratch if needed (using member vars)
-     private fun resizeScratch(size: Int) {
-         // Kotlin arrays are fixed. We assume max size or reallocate.
-         // If we need realloc, we can't resize in place.
-         // But for this tool, we will assume 4096 is enough or caller manages.
-         // Or real implementation:
-         // if (scratch.size < size) scratch = FloatArray(size)
-     }
 
     private fun renderStepAudio(voices: List<StepVoice>, step: StepData, out: FloatArray) {
-        val binauralBuf = scratch
-        val noiseBuf = noiseScratch
         val len = out.size
         
-        // Assuming buffers are big enough... in production, check size.
+        if (scratch.size < len) {
+            scratch = FloatArray(len)
+        }
+        if (noiseScratch.size < len) {
+            noiseScratch = FloatArray(len)
+        }
+        if (voiceTemp.size < len) {
+            voiceTemp = FloatArray(len)
+        }
+        val binauralBuf = scratch
+        val noiseBuf = noiseScratch
         binauralBuf.fill(0f, 0, len)
         noiseBuf.fill(0f, 0, len)
         
@@ -319,7 +352,7 @@ class TrackScheduler(
         
         for (voice in voices) {
             temp.fill(0f, 0, len)
-            voice.kind.process(temp) // assumes temp has right size
+            voice.kind.process(temp)
             
             if (voice.voiceType == VoiceType.Noise) {
                 noiseCount++
@@ -349,14 +382,18 @@ class TrackScheduler(
         peak: Float,
         len: Int
     ) {
-        if (!hasContent) return
+        if (!hasContent) {
+            buf.fill(0f, 0, len)
+            return
+        }
         
         val normGain = if (peak > 1e-9f && normTarget > 0f) {
             min(normTarget / peak, 1.0f)
         } else {
             1.0f
         }
-        val totalGain = normGain * volume
+        val clampedVolume = volume.coerceIn(0.0f, MAX_INDIVIDUAL_GAIN)
+        val totalGain = normGain * clampedVolume
         
         if (abs(totalGain - 1.0f) > 1e-6f) {
             for (i in 0 until len) {
@@ -374,25 +411,57 @@ class TrackScheduler(
         }
         return list
     }
+
+    private fun extractPhasesFromVoices(voices: List<StepVoice>): List<Pair<Float, Float>> {
+        return voices.mapNotNull { it.kind.getPhases() }
+    }
+
+    private fun applyPhasesToVoices(phases: List<Pair<Float, Float>>, voices: List<StepVoice>) {
+        var phaseIdx = 0
+        for (voice in voices) {
+            if (voice.kind.getPhases() != null && phaseIdx < phases.size) {
+                val (phaseL, phaseR) = phases[phaseIdx]
+                voice.kind.setPhases(phaseL, phaseR)
+                phaseIdx++
+            }
+        }
+    }
+
+    private fun noiseConfigsCompatible(old: BackgroundNoiseData?, new: BackgroundNoiseData?): Boolean {
+        if (old == null && new == null) return true
+        if (old == null || new == null) return false
+        if (old.filePath != new.filePath) return false
+        if (old.startTime != new.startTime) return false
+        if (old.fadeIn != new.fadeIn) return false
+        if (old.fadeOut != new.fadeOut) return false
+        if (old.ampEnvelope.size != new.ampEnvelope.size) return false
+        for (idx in old.ampEnvelope.indices) {
+            val a = old.ampEnvelope[idx]
+            val b = new.ampEnvelope[idx]
+            if (a.size < 2 || b.size < 2) return false
+            if (a[0] != b[0] || a[1] != b[1]) return false
+        }
+        return old.params == new.params
+    }
     
-    // Inner class for background noise (simplified)
     class BackgroundNoise(
-        val generator: StreamingNoise,
+        var generator: StreamingNoise,
         var gain: Float,
-        val startSample: Int,
-        val fadeInSamples: Int,
-        val fadeOutSamples: Int,
-        val ampEnvelope: List<Any>, // Simplification
-        val durationSamples: Int?
+        var startSample: Int,
+        var fadeInSamples: Int,
+        var fadeOutSamples: Int,
+        var ampEnvelope: List<Pair<Int, Float>>,
+        var durationSamples: Int?,
+        var params: NoiseParams
     ) {
         var started = false
         var playbackSample = 0
         
         fun mixInto(buffer: FloatArray, scratch: FloatArray, globalStartSample: Int) {
             val frames = buffer.size / 2
-            
-            // Check limits...
-            // Similar logic to Rust 'mix_into'
+            if (frames == 0) return
+
+            durationSamples?.let { if (playbackSample >= it) return }
             
             val startOffset = if (!started && globalStartSample < startSample) {
                 max(0, startSample - globalStartSample)
@@ -400,37 +469,66 @@ class TrackScheduler(
             
             if (startOffset >= frames) return
             
-            val usableFrames = frames - startOffset
-            // Generate (assuming scratch is big enough)
-            
-            // scratch offset? StreamingNoise generates from 0?
-            // We pass a sliced view or just offset manually?
-            // Kotlin doesn't support array slices niceely.
-            // We'll generate to full scratch (or reuse) and copy out.
-            
-            generator.generate(scratch) // generates 'usableFrames' worth? No it fills buffer.
-            // We should zero scratch first? generator fills it.
-            
-            // Apply envelope logic
-             for (i in 0 until usableFrames) {
-                 val env = getEnvelopeAt(playbackSample + i) * gain
-                 val idx = (startOffset + i) * 2
-                 buffer[idx] += scratch[idx] * env
-                 buffer[idx+1] += scratch[idx+1] * env
-             }
-             
-             playbackSample += usableFrames
-             started = true
+            var usableFrames = frames - startOffset
+            durationSamples?.let { usableFrames = min(usableFrames, it - playbackSample) }
+            if (usableFrames <= 0) return
+
+            val mixFrames = startOffset + usableFrames
+            val requiredSamples = mixFrames * 2
+            if (scratch.size < requiredSamples) return
+
+            if (startOffset > 0) {
+                scratch.fill(0f, 0, startOffset * 2)
+            }
+            val temp = FloatArray(usableFrames * 2)
+            generator.generate(temp)
+            System.arraycopy(temp, 0, scratch, startOffset * 2, temp.size)
+
+            for (i in 0 until usableFrames) {
+                val env = getEnvelopeAt(playbackSample + i) * gain
+                val idx = (startOffset + i) * 2
+                buffer[idx] += scratch[idx] * env
+                buffer[idx + 1] += scratch[idx + 1] * env
+            }
+
+            playbackSample += usableFrames
+            started = true
         }
 
         private fun getEnvelopeAt(sample: Int): Float {
-            // Simplified envelope logic
             var amp = 1.0f
             if (fadeInSamples > 0 && sample < fadeInSamples) {
                 amp *= (sample.toFloat() / fadeInSamples).coerceIn(0f, 1f)
             }
-            // ... fade out ...
+            durationSamples?.let { dur ->
+                if (fadeOutSamples > 0 && sample >= dur - fadeOutSamples) {
+                    val pos = sample - (dur - fadeOutSamples)
+                    val denom = max(fadeOutSamples, 1).toFloat()
+                    amp *= (1.0f - pos / denom).coerceIn(0f, 1f)
+                }
+            }
+
+            if (ampEnvelope.isNotEmpty()) {
+                var prev = ampEnvelope[0]
+                for ((t, a) in ampEnvelope) {
+                    if (sample < t) {
+                        val span = max(t - prev.first, 1)
+                        val frac = (sample - prev.first).toFloat() / span.toFloat()
+                        return amp * (prev.second + (a - prev.second) * frac)
+                    }
+                    prev = t to a
+                }
+                amp *= prev.second
+            }
             return amp
+        }
+
+        fun updateRealtimeParams(newParams: NoiseParams): Boolean {
+            if (generator.updateRealtimeParams(newParams)) {
+                params = newParams
+                return true
+            }
+            return false
         }
     }
 }

@@ -125,6 +125,20 @@ fun skewedSinePhase(phaseFraction: Float, skew: Float): Float {
     }
 }
 
+fun skewedTrianglePhase(phaseFraction: Float, skew: Float): Float {
+    var frac = 0.5f + 0.5f * skew
+    if (frac <= 0f) frac = 1e-9f
+    if (frac >= 1f) frac = 1.0f - 1e-9f
+
+    return if (phaseFraction < frac) {
+        val local = phaseFraction / frac
+        -1.0f + 2.0f * local
+    } else {
+        val local = (phaseFraction - frac) / (1.0f - frac)
+        1.0f - 2.0f * local
+    }
+}
+
 fun scipySawtoothTriangle(phase: Float): Float {
     val t = (phase % TWO_PI) / TWO_PI
     val tNorm = if (t < 0) t + 1.0f else t
