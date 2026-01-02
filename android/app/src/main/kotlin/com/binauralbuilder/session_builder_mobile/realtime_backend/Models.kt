@@ -97,15 +97,15 @@ data class StepData(
 )
 
 data class GlobalSettings(
-    @SerializedName("sampleRate")
+    @SerializedName("sampleRate", alternate = ["sample_rate"])
     val sampleRate: Long,
-    @SerializedName("crossfadeDuration")
+    @SerializedName("crossfadeDuration", alternate = ["crossfade_duration"])
     val crossfadeDuration: Double = 3.0,
-    @SerializedName("crossfadeCurve")
+    @SerializedName("crossfadeCurve", alternate = ["crossfade_curve"])
     val crossfadeCurve: String = "linear",
     @SerializedName("outputFilename")
     val outputFilename: String? = null,
-    @SerializedName("normalization_level")
+    @SerializedName("normalizationLevel", alternate = ["normalization_level"])
     val normalizationLevel: Float = 0.95f
 )
 
@@ -135,13 +135,13 @@ data class BackgroundNoiseData(
 )
 
 data class TrackData(
-    @SerializedName("globalSettings", alternate = ["global"])
+    @SerializedName("globalSettings", alternate = ["global", "global_settings"])
     val globalSettings: GlobalSettings,
-    @SerializedName("progression")
+    @SerializedName("progression", alternate = ["steps"])
     val steps: List<StepData>,
     @SerializedName("overlay_clips")
     val clips: MutableList<ClipData> = mutableListOf(),
-    @SerializedName("noise")
+    @SerializedName("noise", alternate = ["background_noise"])
     var backgroundNoise: BackgroundNoiseData? = null
 ) {
     fun resolveRelativePaths(base: File) {
