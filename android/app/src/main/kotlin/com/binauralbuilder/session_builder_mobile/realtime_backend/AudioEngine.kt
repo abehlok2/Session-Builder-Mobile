@@ -15,7 +15,7 @@ class AudioEngine {
     private val isRunning = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
     private val gson = Gson()
-    
+
     // Config
     private val sampleRate = 44100
     private val bufferSize = AudioTrack.getMinBufferSize(
@@ -31,7 +31,7 @@ class AudioEngine {
             val trackData = gson.fromJson(json, TrackData::class.java)
             // Resolve relative paths? Rust did it. We might skip complex path logic for now or implement later.
             // For now, assume paths are absolute or handled.
-            
+
             synchronized(this) {
                 if (scheduler == null) {
                     scheduler = TrackScheduler(trackData, sampleRate.toFloat())
@@ -67,19 +67,19 @@ class AudioEngine {
             e.printStackTrace()
         }
         playbackThread = null
-        
+
         audioTrack?.stop()
         audioTrack?.flush()
         // Don't release if we want to reuse, but stop implies full stop.
         // We can keep track valid.
     }
-    
+
     fun release() {
         stop()
         audioTrack?.release()
         audioTrack = null
     }
-    
+
     fun seek(timeSeconds: Float) {
         synchronized(this) {
             scheduler?.seekTo(timeSeconds)
@@ -115,7 +115,7 @@ class AudioEngine {
         playbackThread = thread(start = true, name = "AudioEngineThread") {
             val bufferSamples = 2048 // Per channel? No, total float count usually
             val buffer = FloatArray(bufferSamples) // Stereo frame count = 1024
-            
+
             while (isRunning.get()) {
                 if (isPaused.get()) {
                     Thread.sleep(10)
@@ -133,7 +133,8 @@ class AudioEngine {
 
                 // Write to AudioTrack
                 // BLOCKING CALL
-                val written = audioTrack?.write(buffer, 0, buffer.size, AudioTrack.WRITE_BLOCKING) ?: 0
+                val written = audioTrack?.write(buffer, 0, buffer.size, AudioTrack.WRITE_BLOCKING)
+                    ?: 0
                 if (written < 0) {
                     Log.e("AudioEngine", "AudioTrack write error: $written")
                     break
@@ -141,7 +142,7 @@ class AudioEngine {
             }
         }
     }
-    
+
     fun setMasterGain(gain: Float) {
         synchronized(this) {
             scheduler?.masterGain = gain
@@ -150,5 +151,25 @@ class AudioEngine {
 
     fun getCurrentPosition(): Float {
         return (scheduler?.absoluteSample ?: 0).toFloat() / sampleRate
+    }
+
+    fun getElapsedSamples(): Long {
+        return scheduler?.absoluteSample ?: 0
+    }
+
+    fun getCurrentStep(): Int {
+        return scheduler?.currentStepIndex ?: 0
+    }
+
+    fun isPaused(): Boolean {
+        return isPaused.get()
+    }
+
+    fun isPlaying(): Boolean {
+        return isRunning.get() && !isPaused.get()
+    }
+
+    fun getSampleRate(): Int {
+        return sampleRate
     }
 }
