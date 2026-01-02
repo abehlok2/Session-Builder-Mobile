@@ -1,5 +1,6 @@
 package com.binauralbuilder.session_builder_mobile.realtime_backend
 
+import android.util.Log
 import com.google.gson.annotations.SerializedName
 import com.google.gson.JsonElement
 import java.io.File
@@ -79,8 +80,17 @@ data class VoiceData(
     val isTransition: Boolean = false,
     val description: String = "",
     @SerializedName("voice_type")
-    val voiceType: String = "binaural"
-)
+    val voiceType: String? = "binaural"
+) {
+    init {
+        if (voiceType == null) {
+            Log.w(
+                "VoiceData",
+                "Null voice_type for synthFunctionName=$synthFunctionName description=$description params=$params"
+            )
+        }
+    }
+}
 
 data class StepData(
     @SerializedName("Duration", alternate = ["durationSeconds", "stepDuration"])

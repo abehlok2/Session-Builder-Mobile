@@ -913,7 +913,8 @@ object VoiceFactory {
             voice = VolumeEnvelopeVoice(voice, envVec)
         }
         
-        val voiceType = when (data.voiceType.lowercase()) {
+        val voiceTypeName = data.voiceType?.lowercase() ?: "binaural"
+        val voiceType = when (voiceTypeName) {
             "noise" -> VoiceType.Noise
             "binaural" -> VoiceType.Binaural
             else -> VoiceType.Other

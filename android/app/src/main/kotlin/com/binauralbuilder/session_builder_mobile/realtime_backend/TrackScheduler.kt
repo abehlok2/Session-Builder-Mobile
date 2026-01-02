@@ -24,8 +24,12 @@ private fun stepsHaveContinuousVoices(a: StepData, b: StepData): Boolean {
         va.synthFunctionName == vb.synthFunctionName &&
             va.params == vb.params &&
             va.isTransition == vb.isTransition &&
-            va.voiceType.equals(vb.voiceType, ignoreCase = true)
+            normalizedVoiceType(va.voiceType) == normalizedVoiceType(vb.voiceType)
     }
+}
+
+private fun normalizedVoiceType(value: String?): String {
+    return value?.lowercase() ?: "binaural"
 }
 
 class TrackScheduler(
