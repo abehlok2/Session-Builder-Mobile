@@ -427,21 +427,24 @@ class TrackScheduler(
         }
     }
 
-    private fun noiseConfigsCompatible(old: BackgroundNoiseData?, new: BackgroundNoiseData?): Boolean {
-        if (old == null && new == null) return true
-        if (old == null || new == null) return false
-        if (old.filePath != new.filePath) return false
-        if (old.startTime != new.startTime) return false
-        if (old.fadeIn != new.fadeIn) return false
-        if (old.fadeOut != new.fadeOut) return false
-        if (old.ampEnvelope.size != new.ampEnvelope.size) return false
-        for (idx in old.ampEnvelope.indices) {
-            val a = old.ampEnvelope[idx]
-            val b = new.ampEnvelope[idx]
-            if (a.size < 2 || b.size < 2) return false
-            if (a[0] != b[0] || a[1] != b[1]) return false
+    private fun noiseConfigsCompatible(
+        previous: BackgroundNoiseData?,
+        updated: BackgroundNoiseData?
+    ): Boolean {
+        if (previous == null && updated == null) return true
+        if (previous == null || updated == null) return false
+        if (previous.filePath != updated.filePath) return false
+        if (previous.startTime != updated.startTime) return false
+        if (previous.fadeIn != updated.fadeIn) return false
+        if (previous.fadeOut != updated.fadeOut) return false
+        if (previous.ampEnvelope.size != updated.ampEnvelope.size) return false
+        for (idx in previous.ampEnvelope.indices) {
+            val before = previous.ampEnvelope[idx]
+            val after = updated.ampEnvelope[idx]
+            if (before.size < 2 || after.size < 2) return false
+            if (before[0] != after[0] || before[1] != after[1]) return false
         }
-        return old.params == new.params
+        return previous.params == updated.params
     }
     
     class BackgroundNoise(
