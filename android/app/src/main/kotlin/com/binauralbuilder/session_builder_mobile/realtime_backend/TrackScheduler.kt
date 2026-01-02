@@ -65,7 +65,7 @@ class TrackScheduler(
     private var voiceTemp = FloatArray(4096)
     
     // Phase continuity
-    private val accumulatedPhases = ArrayList<Pair<Float, Float>>()
+    private var accumulatedPhases = ArrayList<Pair<Float, Float>>()
 
     init {
         // Initialize with default start
