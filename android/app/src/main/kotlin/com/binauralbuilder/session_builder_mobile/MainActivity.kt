@@ -15,7 +15,7 @@ class MainActivity : AudioServiceActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "init" -> {
-                    MobileApi.init()
+                    MobileApi.init(this)
                     result.success(null)
                 }
                 "loadTrack" -> {

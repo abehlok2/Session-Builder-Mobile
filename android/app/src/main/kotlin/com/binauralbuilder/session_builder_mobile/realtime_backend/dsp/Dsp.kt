@@ -43,35 +43,50 @@ fun sineWave(freq: Float, t: Float, phase: Float): Float {
 
 // --- Noise Generators ---
 
-fun pinkNoise(samples: Int): FloatArray {
-    // Paul Kellett's refined method
+/**
+ * Generate pink noise using Paul Kellett's refined method
+ * Uses Box-Muller transform for Gaussian random numbers
+ */
+fun pinkNoise(samples: Int, random: kotlin.random.Random = kotlin.random.Random.Default): FloatArray {
     val out = FloatArray(samples)
     var b0 = 0f; var b1 = 0f; var b2 = 0f; var b3 = 0f; var b4 = 0f; var b5 = 0f
-    
+
     for (i in 0 until samples) {
-        // Approximation of Gaussian
-        val w = java.util.Random().nextGaussian().toFloat()
-        
+        // Box-Muller transform for Gaussian from uniform random
+        val u1 = random.nextDouble()
+        val u2 = random.nextDouble()
+        val w = (sqrt(-2.0 * ln(u1)) * cos(2.0 * PI * u2)).toFloat()
+
         b0 = 0.99886f * b0 + w * 0.0555179f
         b1 = 0.99332f * b1 + w * 0.0750759f
         b2 = 0.96900f * b2 + w * 0.1538520f
         b3 = 0.86650f * b3 + w * 0.3104856f
         b4 = 0.55000f * b4 + w * 0.5329522f
         b5 = -0.7616f * b5 - w * 0.0168980f
-        
+
         out[i] = (b0 + b1 + b2 + b3 + b4 + b5) * 0.11f
     }
     return out
 }
 
-fun brownNoise(samples: Int): FloatArray {
+/**
+ * Generate brown noise (Brownian/red noise)
+ * Uses Box-Muller transform for Gaussian random numbers
+ */
+fun brownNoise(samples: Int, random: kotlin.random.Random = kotlin.random.Random.Default): FloatArray {
     val out = FloatArray(samples)
     var cumulative = 0f
+
     for (i in 0 until samples) {
-        val w = java.util.Random().nextGaussian().toFloat()
+        // Box-Muller transform for Gaussian from uniform random
+        val u1 = random.nextDouble()
+        val u2 = random.nextDouble()
+        val w = (sqrt(-2.0 * ln(u1)) * cos(2.0 * PI * u2)).toFloat()
+
         cumulative += w
         out[i] = cumulative
     }
+
     // Normalize
     var maxAbs = 0f
     for (v in out) {
