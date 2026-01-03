@@ -62,27 +62,34 @@ object PresetLoader {
                         }
 
         return try {
-            val exponent =
-                    presetObj.get("exponent")?.asFloat
+            // Navigate to the nested "noise_parameters" object
+            val noiseParams =
+                    presetObj.getAsJsonObject("noise_parameters")
                             ?: throw IllegalArgumentException(
-                                    "Missing 'exponent' in preset for $noiseType"
+                                    "Missing 'noise_parameters' section in preset for $noiseType"
+                            )
+
+            val exponent =
+                    noiseParams.get("exponent")?.asFloat
+                            ?: throw IllegalArgumentException(
+                                    "Missing 'exponent' in noise_parameters for $noiseType"
                             )
             val highExponent =
-                    presetObj.get("high_exponent")?.asFloat
+                    noiseParams.get("high_exponent")?.asFloat
                             ?: throw IllegalArgumentException(
-                                    "Missing 'high_exponent' in preset for $noiseType"
+                                    "Missing 'high_exponent' in noise_parameters for $noiseType"
                             )
             val distributionCurve =
-                    presetObj.get("distribution_curve")?.asFloat
+                    noiseParams.get("distribution_curve")?.asFloat
                             ?: throw IllegalArgumentException(
-                                    "Missing 'distribution_curve' in preset for $noiseType"
+                                    "Missing 'distribution_curve' in noise_parameters for $noiseType"
                             )
-            val lowcut = presetObj.get("lowcut")?.asFloat
-            val highcut = presetObj.get("highcut")?.asFloat
+            val lowcut = noiseParams.get("lowcut")?.asFloat
+            val highcut = noiseParams.get("highcut")?.asFloat
             val amplitude =
-                    presetObj.get("amplitude")?.asFloat
+                    noiseParams.get("amplitude")?.asFloat
                             ?: throw IllegalArgumentException(
-                                    "Missing 'amplitude' in preset for $noiseType"
+                                    "Missing 'amplitude' in noise_parameters for $noiseType"
                             )
 
             NoisePreset(
