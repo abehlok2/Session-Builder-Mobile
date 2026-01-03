@@ -9117,56 +9117,6 @@
     }
   },
   "noise": {
-    "pink": {
-      "exponent": 1.0,
-      "high_exponent": 1.0,
-      "distribution_curve": 1.0,
-      "amplitude": 1.0
-    },
-    "brown": {
-      "exponent": 2.0,
-      "high_exponent": 2.0,
-      "distribution_curve": 1.0,
-      "amplitude": 1.0
-    },
-    "red": {
-      "exponent": 2.0,
-      "high_exponent": 1.5,
-      "distribution_curve": 1.0,
-      "amplitude": 1.0
-    },
-    "green": {
-      "exponent": 0.0,
-      "high_exponent": 0.0,
-      "distribution_curve": 1.0,
-      "lowcut": 100.0,
-      "highcut": 8000.0,
-      "amplitude": 1.0
-    },
-    "blue": {
-      "exponent": -1.0,
-      "high_exponent": -1.0,
-      "distribution_curve": 1.0,
-      "amplitude": 1.0
-    },
-    "purple": {
-      "exponent": -2.0,
-      "high_exponent": -2.0,
-      "distribution_curve": 1.0,
-      "amplitude": 1.0
-    },
-    "deep brown": {
-      "exponent": 2.5,
-      "high_exponent": 2.0,
-      "distribution_curve": 1.0,
-      "amplitude": 1.0
-    },
-    "white": {
-      "exponent": 0.0,
-      "high_exponent": 0.0,
-      "distribution_curve": 1.0,
-      "amplitude": 1.0
-    },
     "Brown Noise": {
       "amp_envelope": [],
       "duration": 0.0,
