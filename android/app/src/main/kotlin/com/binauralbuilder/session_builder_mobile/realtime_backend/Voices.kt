@@ -894,7 +894,7 @@ class NoiseSweptNotchTransitionVoice(
 object VoiceFactory {
     fun createVoice(data: VoiceData, duration: Float, sampleRate: Float): StepVoice? {
         val paramsMap = data.params as? Map<String, Any> ?: emptyMap()
-        
+
         var voice: Voice? = when (data.synthFunctionName) {
             "binaural_beat" -> BinauralBeatVoice(paramsMap, duration, sampleRate)
             "binaural_beat_transition" -> BinauralBeatTransitionVoice(paramsMap, duration, sampleRate)
@@ -902,6 +902,7 @@ object VoiceFactory {
             "isochronic_tone_transition" -> IsochronicToneTransitionVoice(paramsMap, duration, sampleRate)
             "noise_swept_notch", "noise" -> NoiseSweptNotchVoice(paramsMap, duration, sampleRate)
             "noise_swept_notch_transition", "noise_transition" -> NoiseSweptNotchTransitionVoice(paramsMap, duration, sampleRate)
+            null -> null
             else -> null
         }
         
