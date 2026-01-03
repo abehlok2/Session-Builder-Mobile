@@ -1,12 +1,11 @@
 package com.binauralbuilder.session_builder_mobile.realtime_backend
 
-
 import com.binauralbuilder.session_builder_mobile.realtime_backend.dsp.*
 import com.binauralbuilder.session_builder_mobile.realtime_backend.dsp.SimpleFft
-import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import java.io.Closeable
 import kotlin.math.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 
 // --- Constants ---
 const val BLOCK_SIZE = 2048
@@ -30,43 +29,33 @@ fun lfoValue(phase: Float, waveform: String): Float {
 }
 
 data class NoisePreset(
-    val exponent: Float,
-    val highExponent: Float,
-    val distributionCurve: Float,
-    val lowcut: Float?,
-    val highcut: Float?,
-    val amplitude: Float
+        val exponent: Float,
+        val highExponent: Float,
+        val distributionCurve: Float,
+        val lowcut: Float?,
+        val highcut: Float?,
+        val amplitude: Float
 )
 
 /**
- * Load noise preset from presets.json - no hardcoded defaults
- * All presets must be defined in assets/presets.json
+ * Load noise preset from presets.json - no hardcoded defaults All presets must be defined in
+ * assets/presets.json
  */
 fun presetForType(type: String): NoisePreset? {
     return PresetLoader.getNoisePreset(type)
 }
 
-/**
- * Extract noise name from parameters
- * Throws exception if name is not specified - no defaults
- */
+/** Extract noise name from parameters Throws exception if name is not specified - no defaults */
 fun resolvedNoiseName(params: NoiseParams): String {
-    val nameElement = params.noise_parameters["name"]
-    if (nameElement != null && nameElement.isJsonPrimitive()) {
-        val primitive = nameElement.asJsonPrimitive
-        if (primitive.isString) {
-            return primitive.asString
-        }
-    }
-    throw IllegalArgumentException("Noise name not specified in noise_parameters. All noise types must be explicitly specified in the configuration.")
+    return params.noise_parameters?.name
+            ?: throw IllegalArgumentException(
+                    "Noise name not specified in noise_parameters. All noise types must be explicitly specified in the configuration."
+            )
 }
 
 // --- Biquad Logic ---
 
-data class Coeffs(
-    val b0: Double, val b1: Double, val b2: Double,
-    val a1: Double, val a2: Double
-)
+data class Coeffs(val b0: Double, val b1: Double, val b2: Double, val a1: Double, val a2: Double)
 
 class BiquadState64 {
     var z1: Double = 0.0
@@ -90,12 +79,12 @@ fun notchCoeffsF64(freq: Double, q: Double, sampleRate: Double): Coeffs {
 }
 
 fun biquadTimeVaryingBlock(
-    block: FloatArray,
-    freqSeries: FloatArray,
-    qSeries: FloatArray,
-    cascCounts: IntArray,
-    state: Array<BiquadState64>,
-    sampleRate: Double
+        block: FloatArray,
+        freqSeries: FloatArray,
+        qSeries: FloatArray,
+        cascCounts: IntArray,
+        state: Array<BiquadState64>,
+        sampleRate: Double
 ) {
     val n = block.size
     val maxStage = state.size
@@ -119,13 +108,7 @@ fun biquadTimeVaryingBlock(
     }
 }
 
-data class FilterCoeffs(
-    val b0: Float,
-    val b1: Float,
-    val b2: Float,
-    val a1: Float,
-    val a2: Float
-)
+data class FilterCoeffs(val b0: Float, val b1: Float, val b2: Float, val a1: Float, val a2: Float)
 
 class BiquadFilter(private val coeffs: FilterCoeffs) {
     private var z1 = 0f
@@ -176,15 +159,16 @@ fun butterworthHighPass(freq: Float, sampleRate: Float): FilterCoeffs {
 // --- Worker & Requests ---
 
 class NoiseGenRequest(val buffer: FloatArray)
+
 class NoiseGenResponse(val buffer: FloatArray, val targetRms: Float?)
 
 class AsyncNoiseWorker(
-    val size: Int,
-    val exponent: Float,
-    val highExponent: Float,
-    val distributionCurve: Float,
-    val sampleRate: Float,
-    val random: kotlin.random.Random
+        val size: Int,
+        val exponent: Float,
+        val highExponent: Float,
+        val distributionCurve: Float,
+        val sampleRate: Float,
+        val random: kotlin.random.Random
 ) {
     private val fft = SimpleFft(size)
     private val fftReal = FloatArray(size)
@@ -207,7 +191,8 @@ class AsyncNoiseWorker(
         val minF = sampleRate / size.toFloat()
 
         // DC
-        fftReal[0] = 0f; fftImag[0] = 0f
+        fftReal[0] = 0f
+        fftImag[0] = 0f
 
         for (i in 1..size / 2) {
             val freq = i * sampleRate / size.toFloat()
@@ -220,31 +205,33 @@ class AsyncNoiseWorker(
             val denom = max(logMax - logMin, 1e-12f)
             var logNorm = (logF - logMin) / denom
             logNorm = logNorm.coerceIn(0.0f, 1.0f)
-            
+
             val interp = logNorm.pow(distributionCurve)
             val currentExp = exponent + (highExponent - exponent) * interp
             val scale = freq.pow(-currentExp / 2.0f)
 
             fftReal[i] *= scale
             fftImag[i] *= scale
-            // Conjugate symmetry handled by realInverse logic usually, 
+            // Conjugate symmetry handled by realInverse logic usually,
             // but SimpleFft.realInverse expects packed format or full complex?
-            // SimpleFft handles R2C symmetry implicitly or expects full array? 
-            // Our SimpleFft is a full complex FFT. We need to manually enforce symmetry for real output?
-            // Actually, for pure real noise generation, we can just randomize phase or symmetric magnitude?
+            // SimpleFft handles R2C symmetry implicitly or expects full array?
+            // Our SimpleFft is a full complex FFT. We need to manually enforce symmetry for real
+            // output?
+            // Actually, for pure real noise generation, we can just randomize phase or symmetric
+            // magnitude?
             // Wait, Rust used `rustfft` C2C. We generated complex noise.
             // If we want real output, we should enforce symmetry: X[N-k] = X[k]*
             if (i < size / 2 && i > 0) {
-                 val conjIdx = size - i
-                 fftReal[conjIdx] = fftReal[i]
-                 fftImag[conjIdx] = -fftImag[i]
+                val conjIdx = size - i
+                fftReal[conjIdx] = fftReal[i]
+                fftImag[conjIdx] = -fftImag[i]
             }
         }
         // Nyquist element (if size even)
         if (size % 2 == 0) {
             val idx = size / 2
             // Must be real
-             fftImag[idx] = 0f
+            fftImag[idx] = 0f
         }
 
         fft.realInverse(fftReal, fftImag)
@@ -280,11 +267,7 @@ class AsyncNoiseWorker(
     }
 }
 
-class FftNoiseGenerator(
-    val params: NoiseParams,
-    val sampleRate: Float,
-    val scope: CoroutineScope
-) {
+class FftNoiseGenerator(val params: NoiseParams, val sampleRate: Float, val scope: CoroutineScope) {
     var buffer: FloatArray
     var nextBufferStorage: FloatArray
     var nextBufferReady: Boolean = false
@@ -307,21 +290,27 @@ class FftNoiseGenerator(
     var isUnmodulated = true
     var underrunRecovering = false
     var underrunFadePos = 0
-    var baseAmplitude: Float = params.amplitude ?: 1.0f
+    var baseAmplitude: Float = params.noise_parameters?.amplitude ?: 1.0f
 
     init {
         val noiseLabel = resolvedNoiseName(params).lowercase()
-        val preset = presetForType(noiseLabel)
-            ?: throw IllegalArgumentException("No preset found for noise type '$noiseLabel'. All noise types must be defined in presets.json")
+        val preset =
+                presetForType(noiseLabel)
+                        ?: throw IllegalArgumentException(
+                                "No preset found for noise type '$noiseLabel'. All noise types must be defined in presets.json"
+                        )
 
-        // Use parameter values if explicitly provided, otherwise use preset values (no hardcoded defaults)
-        val exponent = params.exponent ?: preset.exponent
-        val highExponent = params.high_exponent ?: preset.highExponent
-        val distributionCurve = (params.distribution_curve ?: preset.distributionCurve).coerceAtLeast(1e-6f)
-        val lowcut = params.lowcut ?: preset.lowcut
-        val highcut = params.highcut ?: preset.highcut
-        baseAmplitude = params.amplitude ?: preset.amplitude
-        val seed = params.seed ?: 1L // Seed can default to 1 as it's not a sonic parameter
+        // Use parameter values if explicitly provided, otherwise use preset values (no hardcoded
+        // defaults)
+        val np = params.noise_parameters
+        val exponent = np?.exponent ?: preset.exponent
+        val highExponent = np?.highExponent ?: preset.highExponent
+        val distributionCurve =
+                (np?.distributionCurve ?: preset.distributionCurve).coerceAtLeast(1e-6f)
+        val lowcut = np?.lowcut ?: preset.lowcut
+        val highcut = np?.highcut ?: preset.highcut
+        baseAmplitude = np?.amplitude ?: preset.amplitude
+        val seed = np?.seed ?: 1L // Seed can default to 1 as it's not a sonic parameter
 
         val requested = (params.duration_seconds.coerceAtLeast(0.0f) * sampleRate).toInt()
         val defaultSize = 1 shl 15
@@ -342,32 +331,34 @@ class FftNoiseGenerator(
             hpFilters = listOf(BiquadFilter(coeffs), BiquadFilter(coeffs))
         }
 
-        val worker = AsyncNoiseWorker(
-            actualSize,
-            exponent,
-            highExponent,
-            distributionCurve,
-            sampleRate,
-            kotlin.random.Random(seed.toInt())
-        )
-        
+        val worker =
+                AsyncNoiseWorker(
+                        actualSize,
+                        exponent,
+                        highExponent,
+                        distributionCurve,
+                        sampleRate,
+                        kotlin.random.Random(seed.toInt())
+                )
+
         // Launch worker
         scope.launch(Dispatchers.Default) {
-             for (req in workerChannel) {
-                 val newRms = try {
-                     worker.regenerateInto(req.buffer)
-                 } catch (e: Exception) {
-                     e.printStackTrace()
-                     null
-                 }
-                 // Logic for persistent target RMS in worker?
-                 // In Kotlin, worker is valid in closure.
-                 // We can update worker.targetRms
-                 if (worker.targetRms == null && newRms != null) {
-                     worker.targetRms = newRms
-                 }
-                 responseChannel.send(NoiseGenResponse(req.buffer, worker.targetRms))
-             }
+            for (req in workerChannel) {
+                val newRms =
+                        try {
+                            worker.regenerateInto(req.buffer)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            null
+                        }
+                // Logic for persistent target RMS in worker?
+                // In Kotlin, worker is valid in closure.
+                // We can update worker.targetRms
+                if (worker.targetRms == null && newRms != null) {
+                    worker.targetRms = newRms
+                }
+                responseChannel.send(NoiseGenResponse(req.buffer, worker.targetRms))
+            }
         }
 
         // Initial Buffers (Synchronous generation for startup)
@@ -385,15 +376,15 @@ class FftNoiseGenerator(
 
     fun next(): Float {
         val crossfadeLen = min(buffer.size, CROSSFADE_SAMPLES)
-        
+
         // Trigger worker
         if (!nextBufferReady && !workerRequested) {
             if (cursor >= size / 2) {
-                // Recycle? We need to allocate or recycle. 
-                // For simplicity, allocate new or reuse a pool. 
+                // Recycle? We need to allocate or recycle.
+                // For simplicity, allocate new or reuse a pool.
                 // We'll create new request with empty buffer (or recycled if we managed it).
                 // Here we just allocate to be safe, GC handles it. Optimizable later.
-                val buf = FloatArray(size) 
+                val buf = FloatArray(size)
                 if (workerChannel.trySend(NoiseGenRequest(buf)).isSuccess) {
                     workerRequested = true
                 }
@@ -419,7 +410,7 @@ class FftNoiseGenerator(
                 val tmp = buffer
                 buffer = nextBufferStorage
                 nextBufferStorage = tmp // Recycle conceptually
-                
+
                 cursor = skip
                 nextBufferReady = false
                 underrunRecovering = false
@@ -433,7 +424,7 @@ class FftNoiseGenerator(
         }
 
         var sample = buffer[cursor]
-        
+
         // Crossfade logic
         if (nextBufferReady) {
             val start = buffer.size - crossfadeLen
@@ -453,8 +444,12 @@ class FftNoiseGenerator(
                 val t = underrunFadePos.toFloat() / UNDERRUN_FADE_SAMPLES
                 val fadeIn = 0.5f * (1.0f - cos(PI.toFloat() * t))
                 val fadeOut = 1.0f - fadeIn
-                
-                val tailIdx = (buffer.size - UNDERRUN_FADE_SAMPLES + underrunFadePos).coerceIn(0, buffer.size - 1)
+
+                val tailIdx =
+                        (buffer.size - UNDERRUN_FADE_SAMPLES + underrunFadePos).coerceIn(
+                                0,
+                                buffer.size - 1
+                        )
                 val tailSamp = buffer[tailIdx]
                 sample = tailSamp * fadeOut + sample * fadeIn
                 underrunFadePos++
@@ -463,7 +458,7 @@ class FftNoiseGenerator(
                 underrunFadePos = 0
             }
         }
-        
+
         cursor++
 
         val preFilterSample = sample
@@ -514,7 +509,8 @@ class FftNoiseGenerator(
             rmsSamples = 0
         }
 
-        smoothedGain = GAIN_SMOOTHING_COEFF * smoothedGain + (1.0f - GAIN_SMOOTHING_COEFF) * renormGain
+        smoothedGain =
+                GAIN_SMOOTHING_COEFF * smoothedGain + (1.0f - GAIN_SMOOTHING_COEFF) * renormGain
         return post * smoothedGain
     }
 }
@@ -523,24 +519,25 @@ class OlaState {
     val inputRing = FloatArray(BLOCK_SIZE)
     var inputWritePos = 0
     var inputSamplesBuffered = 0
-    
+
     val outAccL = FloatArray(BLOCK_SIZE * 2)
     val outAccR = FloatArray(BLOCK_SIZE * 2)
     val winAcc = FloatArray(BLOCK_SIZE * 2)
-    
+
     var accReadPos = 0
     var accWritePos = 0
     var samplesReady = 0
     var absoluteBlockStart = 0
-    
-    val window = FloatArray(BLOCK_SIZE) { i ->
-         0.5f - 0.5f * cos(2.0f * PI.toFloat() * i / (BLOCK_SIZE - 1)).toFloat()
-    }
-    
+
+    val window =
+            FloatArray(BLOCK_SIZE) { i ->
+                0.5f - 0.5f * cos(2.0f * PI.toFloat() * i / (BLOCK_SIZE - 1)).toFloat()
+            }
+
     // Scratch buffers
     val blockL = FloatArray(BLOCK_SIZE)
     val blockR = FloatArray(BLOCK_SIZE)
-    
+
     // Series buffers
     val tVals = FloatArray(BLOCK_SIZE)
     val lfoMainL = FloatArray(BLOCK_SIZE)
@@ -556,16 +553,20 @@ class OlaState {
     val notchFreqLExtra = FloatArray(BLOCK_SIZE)
     val notchFreqRExtra = FloatArray(BLOCK_SIZE)
     val cascSeriesClamped = IntArray(BLOCK_SIZE)
-    
+
     var smoothedGainL = 1.0f
     var smoothedGainR = 1.0f
 }
 
 data class SweepParams(
-    val startMin: Float, val endMin: Float,
-    val startMax: Float, val endMax: Float,
-    val startQ: Float, val endQ: Float,
-    val startCasc: Int, val endCasc: Int
+        val startMin: Float,
+        val endMin: Float,
+        val startMax: Float,
+        val endMax: Float,
+        val startQ: Float,
+        val endQ: Float,
+        val startCasc: Int,
+        val endCasc: Int
 )
 
 class SweepRuntime(var maxCasc: Int) {
@@ -575,17 +576,14 @@ class SweepRuntime(var maxCasc: Int) {
     val rExtra = Array(maxCasc) { BiquadState64() }
 }
 
-class StreamingNoise(
-    val params: NoiseParams,
-    val sampleRate: Float
-) : Closeable {
+class StreamingNoise(val params: NoiseParams, val sampleRate: Float) : Closeable {
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private val fftGen = FftNoiseGenerator(params, sampleRate, scope)
     private val ola = OlaState()
     private var sweepParams: List<SweepParams> = emptyList()
     private var sweepRuntime: List<SweepRuntime> = emptyList()
     private val durationSamples = (params.duration_seconds * sampleRate).toInt()
-    
+
     // State
     private var totalSamplesOutput = 0
     private var lfoFreq = 0f
@@ -601,12 +599,11 @@ class StreamingNoise(
 
     init {
         sweepParams = buildSweepParams(params)
-        sweepRuntime = sweepParams.map { SweepRuntime(max(it.startCasc, it.endCasc).coerceAtLeast(1)) }
+        sweepRuntime =
+                sweepParams.map { SweepRuntime(max(it.startCasc, it.endCasc).coerceAtLeast(1)) }
         updateRealtimeParams(params)
         if (params.sweeps.isEmpty()) {
-            repeat(RENORM_WINDOW) {
-                fftGen.next()
-            }
+            repeat(RENORM_WINDOW) { fftGen.next() }
         }
     }
 
@@ -614,16 +611,24 @@ class StreamingNoise(
         return p.sweeps.mapIndexed { index, s ->
             // Require all sweep parameters to be explicitly set (> 0) - no defaults
             if (s.start_min <= 0f) {
-                throw IllegalArgumentException("Sweep $index: start_min must be > 0, got ${s.start_min}")
+                throw IllegalArgumentException(
+                        "Sweep $index: start_min must be > 0, got ${s.start_min}"
+                )
             }
             if (s.start_max <= 0f) {
-                throw IllegalArgumentException("Sweep $index: start_max must be > 0, got ${s.start_max}")
+                throw IllegalArgumentException(
+                        "Sweep $index: start_max must be > 0, got ${s.start_max}"
+                )
             }
             if (s.start_q <= 0f) {
-                throw IllegalArgumentException("Sweep $index: start_q must be > 0, got ${s.start_q}")
+                throw IllegalArgumentException(
+                        "Sweep $index: start_q must be > 0, got ${s.start_q}"
+                )
             }
             if (s.start_casc <= 0) {
-                throw IllegalArgumentException("Sweep $index: start_casc must be > 0, got ${s.start_casc}")
+                throw IllegalArgumentException(
+                        "Sweep $index: start_casc must be > 0, got ${s.start_casc}"
+                )
             }
 
             val startMin = s.start_min
@@ -644,13 +649,14 @@ class StreamingNoise(
             return false
         }
 
-        val lfoBase = if (p.transition) {
-            p.start_lfo_freq
-        } else if (p.lfo_freq != 0f) {
-            p.lfo_freq
-        } else {
-            1.0f / 12.0f
-        }
+        val lfoBase =
+                if (p.transition) {
+                    p.start_lfo_freq
+                } else if (p.lfo_freq != 0f) {
+                    p.lfo_freq
+                } else {
+                    1.0f / 12.0f
+                }
 
         val updatedSweeps = buildSweepParams(p)
         sweepRuntime.forEachIndexed { index, runtime ->
@@ -673,7 +679,7 @@ class StreamingNoise(
         startIntraOffset = p.start_intra_phase_offset_deg * (PI.toFloat() / 180.0f)
         endIntraOffset = p.end_intra_phase_offset_deg * (PI.toFloat() / 180.0f)
         initialOffset = p.initial_offset
-        fftGen.baseAmplitude = p.amplitude ?: 1.0f
+        fftGen.baseAmplitude = p.noise_parameters?.amplitude ?: 1.0f
         return true
     }
 
@@ -681,23 +687,23 @@ class StreamingNoise(
         val frames = out.size / 2
         var framesWritten = 0
         val accSize = ola.outAccL.size
-        
+
         while (framesWritten < frames) {
             if (ola.samplesReady > 0) {
                 val readPos = ola.accReadPos
                 val winVal = ola.winAcc[readPos]
-                
+
                 val l = if (winVal > 1e-8f) ola.outAccL[readPos] / winVal else 0f
                 val r = if (winVal > 1e-8f) ola.outAccR[readPos] / winVal else 0f
-                
+
                 out[framesWritten * 2] = l
                 out[framesWritten * 2 + 1] = r
-                
+
                 // Clear
                 ola.outAccL[readPos] = 0f
                 ola.outAccR[readPos] = 0f
                 ola.winAcc[readPos] = 0f
-                
+
                 ola.accReadPos = (readPos + 1) % accSize
                 ola.samplesReady--
                 totalSamplesOutput++
@@ -720,7 +726,7 @@ class StreamingNoise(
         val scratch = FloatArray(samples * 2)
         generate(scratch)
     }
-    
+
     // --- Transition & LFO Helpers ---
 
     private fun transitionFraction(sampleIdx: Long): Float {
@@ -790,43 +796,72 @@ class StreamingNoise(
         // 3. Filtering
         for ((si, sp) in sweepParams.withIndex()) {
             val rt = sweepRuntime[si]
-            
+
             // Calc Series parameters for this block
             for (i in 0 until BLOCK_SIZE) {
-                 val t = ola.tVals[i]
-                 ola.minSeries[i] = sp.startMin + (sp.endMin - sp.startMin) * t
-                 ola.maxSeries[i] = sp.startMax + (sp.endMax - sp.startMax) * t
-                 ola.qSeries[i] = sp.startQ + (sp.endQ - sp.startQ) * t
-                 
-                 val cascF = sp.startCasc.toFloat() + (sp.endCasc.toFloat() - sp.startCasc.toFloat()) * t
-                 ola.cascSeries[i] = max(cascF.roundToInt(), 1)
+                val t = ola.tVals[i]
+                ola.minSeries[i] = sp.startMin + (sp.endMin - sp.startMin) * t
+                ola.maxSeries[i] = sp.startMax + (sp.endMax - sp.startMax) * t
+                ola.qSeries[i] = sp.startQ + (sp.endQ - sp.startQ) * t
+
+                val cascF =
+                        sp.startCasc.toFloat() + (sp.endCasc.toFloat() - sp.startCasc.toFloat()) * t
+                ola.cascSeries[i] = max(cascF.roundToInt(), 1)
             }
-            
+
             // Compute Notch Frequencies
             for (i in 0 until BLOCK_SIZE) {
                 val centerFreq = (ola.minSeries[i] + ola.maxSeries[i]) * 0.5f
                 val freqRange = (ola.maxSeries[i] - ola.minSeries[i]) * 0.5f
-                
+
                 ola.notchFreqL[i] = centerFreq + freqRange * ola.lfoMainL[i]
                 ola.notchFreqR[i] = centerFreq + freqRange * ola.lfoMainR[i]
-                
+
                 if (doExtra) {
                     ola.notchFreqLExtra[i] = centerFreq + freqRange * ola.lfoExtraL[i]
                     ola.notchFreqRExtra[i] = centerFreq + freqRange * ola.lfoExtraR[i]
                 }
             }
-             
+
             for (i in 0 until BLOCK_SIZE) {
                 ola.cascSeriesClamped[i] = ola.cascSeries[i].coerceIn(1, rt.maxCasc)
             }
 
             // Biquad apply
-            biquadTimeVaryingBlock(ola.blockL, ola.notchFreqL, ola.qSeries, ola.cascSeriesClamped, rt.lMain, sampleRate.toDouble())
-            biquadTimeVaryingBlock(ola.blockR, ola.notchFreqR, ola.qSeries, ola.cascSeriesClamped, rt.rMain, sampleRate.toDouble())
-            
+            biquadTimeVaryingBlock(
+                    ola.blockL,
+                    ola.notchFreqL,
+                    ola.qSeries,
+                    ola.cascSeriesClamped,
+                    rt.lMain,
+                    sampleRate.toDouble()
+            )
+            biquadTimeVaryingBlock(
+                    ola.blockR,
+                    ola.notchFreqR,
+                    ola.qSeries,
+                    ola.cascSeriesClamped,
+                    rt.rMain,
+                    sampleRate.toDouble()
+            )
+
             if (doExtra) {
-                 biquadTimeVaryingBlock(ola.blockL, ola.notchFreqLExtra, ola.qSeries, ola.cascSeriesClamped, rt.lExtra, sampleRate.toDouble())
-                 biquadTimeVaryingBlock(ola.blockR, ola.notchFreqRExtra, ola.qSeries, ola.cascSeriesClamped, rt.rExtra, sampleRate.toDouble())
+                biquadTimeVaryingBlock(
+                        ola.blockL,
+                        ola.notchFreqLExtra,
+                        ola.qSeries,
+                        ola.cascSeriesClamped,
+                        rt.lExtra,
+                        sampleRate.toDouble()
+                )
+                biquadTimeVaryingBlock(
+                        ola.blockR,
+                        ola.notchFreqRExtra,
+                        ola.qSeries,
+                        ola.cascSeriesClamped,
+                        rt.rExtra,
+                        sampleRate.toDouble()
+                )
             }
         }
 
@@ -840,22 +875,26 @@ class StreamingNoise(
             val rmsL = sqrt(sumSqL / BLOCK_SIZE.toFloat())
             val rmsR = sqrt(sumSqR / BLOCK_SIZE.toFloat())
 
-            val rawTargetL = if (rmsL > 1e-8f) {
-                (rmsIn / rmsL).coerceIn(0.25f, 16.0f)
-            } else {
-                ola.smoothedGainL
-            }
-            val rawTargetR = if (rmsR > 1e-8f) {
-                (rmsIn / rmsR).coerceIn(0.25f, 16.0f)
-            } else {
-                ola.smoothedGainR
-            }
+            val rawTargetL =
+                    if (rmsL > 1e-8f) {
+                        (rmsIn / rmsL).coerceIn(0.25f, 16.0f)
+                    } else {
+                        ola.smoothedGainL
+                    }
+            val rawTargetR =
+                    if (rmsR > 1e-8f) {
+                        (rmsIn / rmsR).coerceIn(0.25f, 16.0f)
+                    } else {
+                        ola.smoothedGainR
+                    }
 
             val ratioDiffL = abs(rawTargetL - ola.smoothedGainL) / max(ola.smoothedGainL, 0.01f)
             val ratioDiffR = abs(rawTargetR - ola.smoothedGainR) / max(ola.smoothedGainR, 0.01f)
 
-            val targetGainL = if (ratioDiffL > OLA_RMS_HYSTERESIS_RATIO) rawTargetL else ola.smoothedGainL
-            val targetGainR = if (ratioDiffR > OLA_RMS_HYSTERESIS_RATIO) rawTargetR else ola.smoothedGainR
+            val targetGainL =
+                    if (ratioDiffL > OLA_RMS_HYSTERESIS_RATIO) rawTargetL else ola.smoothedGainL
+            val targetGainR =
+                    if (ratioDiffR > OLA_RMS_HYSTERESIS_RATIO) rawTargetR else ola.smoothedGainR
 
             val smoothCoeff = OLA_GAIN_SMOOTHING_COEFF
             val oneMinusCoeff = 1.0f - smoothCoeff
@@ -873,13 +912,13 @@ class StreamingNoise(
             val w = ola.window[i]
             ola.blockL[i] *= w
             ola.blockR[i] *= w
-            
+
             val accIdx = (ola.accWritePos + i) % (BLOCK_SIZE * 2)
             ola.outAccL[accIdx] += ola.blockL[i]
             ola.outAccR[accIdx] += ola.blockR[i]
             ola.winAcc[accIdx] += w
         }
-        
+
         ola.accWritePos = (ola.accWritePos + HOP_SIZE) % (BLOCK_SIZE * 2)
         ola.samplesReady += HOP_SIZE
         ola.absoluteBlockStart += HOP_SIZE
@@ -891,9 +930,9 @@ class StreamingNoise(
 
     companion object {
         fun newWithCalibratedPeak(
-            params: NoiseParams,
-            sampleRate: Float,
-            calibrationFrames: Int
+                params: NoiseParams,
+                sampleRate: Float,
+                calibrationFrames: Int
         ): Pair<StreamingNoise, Float> {
             val frames = max(calibrationFrames, 1)
             val generator = StreamingNoise(params, sampleRate)
