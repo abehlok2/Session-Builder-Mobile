@@ -38,20 +38,18 @@ data class NoisePreset(
     val amplitude: Float
 )
 
+/**
+ * Load noise preset from presets.json - no hardcoded defaults
+ * All presets must be defined in assets/presets.json
+ */
 fun presetForType(type: String): NoisePreset? {
-    return when (type) {
-        "pink" -> NoisePreset(1.0f, 1.0f, 1.0f, null, null, 1.0f)
-        "brown" -> NoisePreset(2.0f, 2.0f, 1.0f, null, null, 1.0f)
-        "red" -> NoisePreset(2.0f, 1.5f, 1.0f, null, null, 1.0f)
-        "green" -> NoisePreset(0.0f, 0.0f, 1.0f, 100.0f, 8000.0f, 1.0f)
-        "blue" -> NoisePreset(-1.0f, -1.0f, 1.0f, null, null, 1.0f)
-        "purple" -> NoisePreset(-2.0f, -2.0f, 1.0f, null, null, 1.0f)
-        "deep brown" -> NoisePreset(2.5f, 2.0f, 1.0f, null, null, 1.0f)
-        "white" -> NoisePreset(0.0f, 0.0f, 1.0f, null, null, 1.0f)
-        else -> null
-    }
+    return PresetLoader.getNoisePreset(type)
 }
 
+/**
+ * Extract noise name from parameters
+ * Throws exception if name is not specified - no defaults
+ */
 fun resolvedNoiseName(params: NoiseParams): String {
     val nameElement = params.noise_parameters["name"]
     if (nameElement != null && nameElement.isJsonPrimitive()) {
@@ -60,7 +58,7 @@ fun resolvedNoiseName(params: NoiseParams): String {
             return primitive.asString
         }
     }
-    return "pink"
+    throw IllegalArgumentException("Noise name not specified in noise_parameters. All noise types must be explicitly specified in the configuration.")
 }
 
 // --- Biquad Logic ---
@@ -186,7 +184,7 @@ class AsyncNoiseWorker(
     val highExponent: Float,
     val distributionCurve: Float,
     val sampleRate: Float,
-    val random: java.util.Random
+    val random: kotlin.random.Random
 ) {
     private val fft = SimpleFft(size)
     private val fftReal = FloatArray(size)
@@ -194,9 +192,12 @@ class AsyncNoiseWorker(
     var targetRms: Float? = null
 
     fun regenerateInto(target: FloatArray): Float? {
-        // Fill scratch with white noise
+        // Fill scratch with white noise using Box-Muller transform for Gaussian
         for (i in 0 until size) {
-            fftReal[i] = random.nextGaussian().toFloat()
+            // Box-Muller transform to generate Gaussian from uniform random
+            val u1 = random.nextDouble()
+            val u2 = random.nextDouble()
+            fftReal[i] = (sqrt(-2.0 * ln(u1)) * cos(2.0 * PI * u2)).toFloat()
             fftImag[i] = 0f
         }
 
@@ -311,13 +312,16 @@ class FftNoiseGenerator(
     init {
         val noiseLabel = resolvedNoiseName(params).lowercase()
         val preset = presetForType(noiseLabel)
-        val exponent = params.exponent ?: preset?.exponent ?: 0.0f
-        val highExponent = params.high_exponent ?: preset?.highExponent ?: exponent
-        val distributionCurve = (params.distribution_curve ?: preset?.distributionCurve ?: 1.0f).coerceAtLeast(1e-6f)
-        val lowcut = params.lowcut ?: preset?.lowcut
-        val highcut = params.highcut ?: preset?.highcut
-        baseAmplitude = params.amplitude ?: preset?.amplitude ?: 1.0f
-        val seed = (params.seed ?: 1L).coerceAtLeast(0L)
+            ?: throw IllegalArgumentException("No preset found for noise type '$noiseLabel'. All noise types must be defined in presets.json")
+
+        // Use parameter values if explicitly provided, otherwise use preset values (no hardcoded defaults)
+        val exponent = params.exponent ?: preset.exponent
+        val highExponent = params.high_exponent ?: preset.highExponent
+        val distributionCurve = (params.distribution_curve ?: preset.distributionCurve).coerceAtLeast(1e-6f)
+        val lowcut = params.lowcut ?: preset.lowcut
+        val highcut = params.highcut ?: preset.highcut
+        baseAmplitude = params.amplitude ?: preset.amplitude
+        val seed = params.seed ?: 1L // Seed can default to 1 as it's not a sonic parameter
 
         val requested = (params.duration_seconds.coerceAtLeast(0.0f) * sampleRate).toInt()
         val defaultSize = 1 shl 15
@@ -344,7 +348,7 @@ class FftNoiseGenerator(
             highExponent,
             distributionCurve,
             sampleRate,
-            java.util.Random(seed)
+            kotlin.random.Random(seed.toInt())
         )
         
         // Launch worker
@@ -607,15 +611,30 @@ class StreamingNoise(
     }
 
     private fun buildSweepParams(p: NoiseParams): List<SweepParams> {
-        return p.sweeps.map { s ->
-            val startMin = if (s.start_min > 0f) s.start_min else 1000f
+        return p.sweeps.mapIndexed { index, s ->
+            // Require all sweep parameters to be explicitly set (> 0) - no defaults
+            if (s.start_min <= 0f) {
+                throw IllegalArgumentException("Sweep $index: start_min must be > 0, got ${s.start_min}")
+            }
+            if (s.start_max <= 0f) {
+                throw IllegalArgumentException("Sweep $index: start_max must be > 0, got ${s.start_max}")
+            }
+            if (s.start_q <= 0f) {
+                throw IllegalArgumentException("Sweep $index: start_q must be > 0, got ${s.start_q}")
+            }
+            if (s.start_casc <= 0) {
+                throw IllegalArgumentException("Sweep $index: start_casc must be > 0, got ${s.start_casc}")
+            }
+
+            val startMin = s.start_min
             val endMin = if (s.end_min > 0f) s.end_min else startMin
-            val startMax = if (s.start_max > 0f) max(s.start_max, startMin + 1.0f) else startMin + 9000f
+            val startMax = max(s.start_max, startMin + 1.0f)
             val endMax = if (s.end_max > 0f) max(s.end_max, endMin + 1.0f) else startMax
-            val startQ = if (s.start_q > 0f) s.start_q else 25.0f
+            val startQ = s.start_q
             val endQ = if (s.end_q > 0f) s.end_q else startQ
-            val startCasc = if (s.start_casc > 0) s.start_casc else 10
+            val startCasc = s.start_casc
             val endCasc = if (s.end_casc > 0) s.end_casc else startCasc
+
             SweepParams(startMin, endMin, startMax, endMax, startQ, endQ, startCasc, endCasc)
         }
     }

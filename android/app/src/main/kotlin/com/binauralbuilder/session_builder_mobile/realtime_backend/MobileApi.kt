@@ -1,5 +1,6 @@
 package com.binauralbuilder.session_builder_mobile.realtime_backend
 
+import android.content.Context
 import android.util.Log
 
 data class PlaybackStatus(
@@ -11,9 +12,17 @@ data class PlaybackStatus(
 
 object MobileApi {
     private var engine: AudioEngine? = null
+    private var appContext: Context? = null
 
     // Called from Flutter/Android MethodChannel
-    fun init() {
+    fun init(context: Context) {
+        appContext = context.applicationContext
+
+        // Initialize PresetLoader with context
+        if (!PresetLoader.isInitialized()) {
+            PresetLoader.initialize(appContext!!)
+        }
+
         if (engine == null) {
             engine = AudioEngine()
         }

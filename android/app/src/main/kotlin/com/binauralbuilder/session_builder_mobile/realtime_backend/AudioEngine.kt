@@ -16,25 +16,27 @@ class AudioEngine {
     private val isPaused = AtomicBoolean(false)
     private val gson = Gson()
 
-    // Config
-    private val sampleRate = 44100
-    private val bufferSize = AudioTrack.getMinBufferSize(
-        sampleRate,
-        AudioFormat.CHANNEL_OUT_STEREO,
-        AudioFormat.ENCODING_PCM_FLOAT
-    ).let { min ->
-        if (min > 0) min * 4 else 8192 // Ensure enough buffer
-    }
+    // Sample rate is determined from track data, not hardcoded
+    private var sampleRate: Int = 44100  // Will be set from track data
 
     fun loadTrack(json: String) {
         try {
             val trackData = gson.fromJson(json, TrackData::class.java)
-            // Resolve relative paths? Rust did it. We might skip complex path logic for now or implement later.
-            // For now, assume paths are absolute or handled.
+
+            // Resolve relative paths relative to the app's external files directory
+            val context = MobileApi.appContext
+            if (context != null) {
+                val baseDir = context.getExternalFilesDir(null) ?: context.filesDir
+                trackData.resolveRelativePaths(baseDir)
+            }
+
+            // Use sample rate from track data instead of hardcoded value
+            val trackSampleRate = trackData.globalSettings.sampleRate.toInt()
+            sampleRate = trackSampleRate
 
             synchronized(this) {
                 if (scheduler == null) {
-                    scheduler = TrackScheduler(trackData, sampleRate.toFloat())
+                    scheduler = TrackScheduler(trackData, trackSampleRate.toFloat())
                 } else {
                     scheduler?.updateTrack(trackData)
                 }
@@ -88,6 +90,15 @@ class AudioEngine {
 
     private fun startAudio() {
         if (audioTrack == null) {
+            // Calculate buffer size based on actual sample rate from track data
+            val bufferSize = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_STEREO,
+                AudioFormat.ENCODING_PCM_FLOAT
+            ).let { min ->
+                if (min > 0) min * 4 else 8192 // Ensure enough buffer
+            }
+
             val attributes = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
