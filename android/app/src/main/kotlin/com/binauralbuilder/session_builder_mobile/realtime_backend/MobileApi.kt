@@ -1,18 +1,17 @@
 package com.binauralbuilder.session_builder_mobile.realtime_backend
 
 import android.content.Context
-import android.util.Log
 
 data class PlaybackStatus(
-    val positionSeconds: Float,
-    val currentStep: Int,
-    val isPaused: Boolean,
-    val sampleRate: Int
+        val positionSeconds: Float,
+        val currentStep: Int,
+        val isPaused: Boolean,
+        val sampleRate: Int
 )
 
 object MobileApi {
     private var engine: AudioEngine? = null
-    private var appContext: Context? = null
+    internal var appContext: Context? = null
 
     // Called from Flutter/Android MethodChannel
     fun init(context: Context) {
@@ -67,10 +66,10 @@ object MobileApi {
     fun getPlaybackStatus(): PlaybackStatus? {
         val engineInstance = engine ?: return null
         return PlaybackStatus(
-            positionSeconds = engineInstance.getCurrentPosition(),
-            currentStep = engineInstance.getCurrentStep(),
-            isPaused = engineInstance.isPaused(),
-            sampleRate = engineInstance.getSampleRate()
+                positionSeconds = engineInstance.getCurrentPosition(),
+                currentStep = engineInstance.getCurrentStep(),
+                isPaused = engineInstance.isPaused(),
+                sampleRate = engineInstance.getSampleRate()
         )
     }
 
