@@ -71,7 +71,7 @@ data class VolumeEnvelope(
 
 data class VoiceData(
     @SerializedName("synthFunctionName", alternate = ["synth_function"])
-    val synthFunctionName: String,
+    val synthFunctionName: String?,
     @SerializedName("parameters")
     val params: Map<String, JsonElement> = emptyMap(),
     @SerializedName("volumeEnvelope")
