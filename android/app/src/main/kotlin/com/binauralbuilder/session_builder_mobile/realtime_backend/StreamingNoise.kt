@@ -293,23 +293,34 @@ class FftNoiseGenerator(val params: NoiseParams, val sampleRate: Float, val scop
     var baseAmplitude: Float = params.noise_parameters?.amplitude ?: 1.0f
 
     init {
-        val noiseLabel = resolvedNoiseName(params).lowercase()
-        val preset =
-                presetForType(noiseLabel)
-                        ?: throw IllegalArgumentException(
-                                "No preset found for noise type '$noiseLabel'. All noise types must be defined in presets.json"
-                        )
+        // Try to find a preset as fallback, but params from Flutter should already contain all values
+        // The noise_parameters.name field is just descriptive - not a lookup key for presets
+        // Preset keys are like "Brown Noise", "Rolling Brown", etc.
+        val noiseName = params.noise_parameters?.name
+        val preset: NoisePreset? = if (noiseName != null) {
+            // Try exact match first, then try with " Noise" suffix for base colors
+            presetForType(noiseName)
+                ?: presetForType("$noiseName Noise")
+                ?: presetForType("Rolling $noiseName")
+        } else {
+            null
+        }
 
-        // Use parameter values if explicitly provided, otherwise use preset values (no hardcoded
-        // defaults)
+        // Use parameter values if explicitly provided, otherwise use preset values as fallback
+        // Flutter sends full preset values in params, so preset lookup is just a safety net
         val np = params.noise_parameters
-        val exponent = np?.exponent ?: preset.exponent
-        val highExponent = np?.highExponent ?: preset.highExponent
-        val distributionCurve =
-                (np?.distributionCurve ?: preset.distributionCurve).coerceAtLeast(1e-6f)
-        val lowcut = np?.lowcut ?: preset.lowcut
-        val highcut = np?.highcut ?: preset.highcut
-        baseAmplitude = np?.amplitude ?: preset.amplitude
+
+        // Get required values - prefer params, fall back to preset
+        val exponent = np?.exponent ?: preset?.exponent
+                ?: throw IllegalArgumentException("exponent not specified in noise_parameters and no matching preset found")
+        val highExponent = np?.highExponent ?: preset?.highExponent
+                ?: throw IllegalArgumentException("highExponent not specified in noise_parameters and no matching preset found")
+        val distributionCurve = (np?.distributionCurve ?: preset?.distributionCurve
+                ?: throw IllegalArgumentException("distributionCurve not specified in noise_parameters and no matching preset found")).coerceAtLeast(1e-6f)
+        val lowcut = np?.lowcut ?: preset?.lowcut
+        val highcut = np?.highcut ?: preset?.highcut
+        baseAmplitude = np?.amplitude ?: preset?.amplitude
+                ?: throw IllegalArgumentException("amplitude not specified in noise_parameters and no matching preset found")
         val seed = np?.seed ?: 1L // Seed can default to 1 as it's not a sonic parameter
 
         val requested = (params.duration_seconds.coerceAtLeast(0.0f) * sampleRate).toInt()
