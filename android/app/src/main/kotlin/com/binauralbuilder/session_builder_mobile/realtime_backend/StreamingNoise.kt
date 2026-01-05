@@ -268,11 +268,11 @@ class AsyncNoiseWorker(
 }
 
 class FftNoiseGenerator(val params: NoiseParams, val sampleRate: Float, val scope: CoroutineScope) {
-    var buffer: FloatArray
-    var nextBufferStorage: FloatArray
+    lateinit var buffer: FloatArray
+    lateinit var nextBufferStorage: FloatArray
     var nextBufferReady: Boolean = false
     var cursor: Int = 0
-    var size: Int
+    var size: Int = 0
 
     private val workerChannel = Channel<NoiseGenRequest>(2)
     private val responseChannel = Channel<NoiseGenResponse>(2)
