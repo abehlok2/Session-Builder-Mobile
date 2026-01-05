@@ -119,8 +119,8 @@ class AudioHelpers {
     );
 
     return {
-      "synth_function_name": "noise_swept_notch",
-      "params": preset, // Pass the full preset object as params
+      "synth_function": "noise_swept_notch",
+      "parameters": preset, // Pass the full preset object as params
       "voice_type": "noise",
       "description": presetName,
     };

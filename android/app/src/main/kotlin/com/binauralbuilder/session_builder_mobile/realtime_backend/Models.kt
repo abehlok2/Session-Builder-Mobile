@@ -74,9 +74,9 @@ data class VolumeEnvelope(
 )
 
 data class VoiceData(
-        @SerializedName("synthFunctionName", alternate = ["synth_function"])
+        @SerializedName("synthFunctionName", alternate = ["synth_function", "synth_function_name"])
         val synthFunctionName: String?,
-        @SerializedName("parameters") val params: Map<String, JsonElement> = emptyMap(),
+        @SerializedName("parameters", alternate = ["params"]) val params: Map<String, JsonElement> = emptyMap(),
         @SerializedName("volumeEnvelope") val volumeEnvelope: List<List<Float>>? = null,
         @SerializedName("isTransition", alternate = ["is_transition"])
         val isTransition: Boolean = false,
